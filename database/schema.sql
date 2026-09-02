@@ -1,0 +1,2 @@
+-- SmartBlock Database Schema
+-- Database implementation will be added during development.
