@@ -16,7 +16,7 @@ Different railway departments can submit their maintenance requests, and SmartBl
 
 --Tech Stack
 - **Frontend:** HTML, CSS, JavaScript
-- **Backend:** Python, Flask
+- **Backend:** Java , java Swings
 - **Database:** MySQL
 --Status
    :The project is currently under development.
