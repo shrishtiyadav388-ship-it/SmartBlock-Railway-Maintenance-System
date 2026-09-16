@@ -1,18 +1,14 @@
 -- SmartBlock Database Schema
 -- Database implementation will be added during development.
--- ============================================================
 -- SMARTBLOCK DATABASE
 -- Railway Maintenance Block Planning System
 -- MySQL 8.x
--- ============================================================
 
 CREATE DATABASE smartblock;
 USE smartblock;
 
 
--- ============================================================
 -- 1. USERS AND ACCESS CONTROL
--- ============================================================
 
 -- Stores different user roles
 CREATE TABLE roles (
@@ -46,9 +42,7 @@ CREATE TABLE users (
 );
 
 
--- ============================================================
 -- 2. RAILWAY RESOURCES
--- ============================================================
 
 -- Railway sections where maintenance work is performed
 CREATE TABLE sections (
@@ -74,9 +68,7 @@ CREATE TABLE train_timetable (
 );
 
 
--- ============================================================
 -- 3. MAINTENANCE REQUESTS
--- ============================================================
 
 -- Main table used by the scheduling algorithm
 -- Each maintenance request can be treated like a process in OS
@@ -134,9 +126,7 @@ CREATE TABLE maintenance_requests (
 );
 
 
--- ============================================================
 -- 4. REQUEST STATUS HISTORY
--- ============================================================
 
 -- Keeps track of status changes of a request
 CREATE TABLE request_status_history (
@@ -160,9 +150,7 @@ CREATE TABLE request_status_history (
 );
 
 
--- ============================================================
 -- 5. CONFLICTS
--- ============================================================
 
 -- Stores conflicts between maintenance requests
 CREATE TABLE conflicts (
@@ -190,9 +178,7 @@ CREATE TABLE conflicts (
 );
 
 
--- ============================================================
 -- 6. PLANNER RUNS
--- ============================================================
 
 -- Stores every time the scheduling algorithm is executed
 CREATE TABLE planning_runs (
@@ -210,9 +196,7 @@ CREATE TABLE planning_runs (
 );
 
 
--- ============================================================
 -- 7. PROPOSED SCHEDULE
--- ============================================================
 
 -- Temporary schedule created by the planner
 -- Control Room can review it before approval
@@ -245,9 +229,7 @@ CREATE TABLE proposed_schedules (
 );
 
 
--- ============================================================
 -- 8. FINAL APPROVED SCHEDULE
--- ============================================================
 
 -- Only approved schedules are stored here
 CREATE TABLE block_schedules (
@@ -279,9 +261,7 @@ CREATE TABLE block_schedules (
 );
 
 
--- ============================================================
 -- 9. AUDIT LOG
--- ============================================================
 
 -- Keeps record of important actions performed in the system
 CREATE TABLE audit_logs (
@@ -300,9 +280,7 @@ CREATE TABLE audit_logs (
 );
 
 
--- ============================================================
 -- 10. AI CHAT HISTORY
--- ============================================================
 
 -- Stores questions and answers from the SmartBlock AI assistant
 CREATE TABLE chat_history (
