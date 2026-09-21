@@ -13,14 +13,13 @@ CREATE OR REPLACE VIEW approved_schedule AS
 SELECT
     r.id,
     s.name AS section,
-    r.department,
-    r.proposed AS starts,
-    TIMESTAMPADD(MINUTE, r.minutes, r.proposed) AS ends,
-    r.reason
-FROM requests r
-JOIN sections s
-    ON s.id = r.section_id
-WHERE r.status = 'APPROVED';
+    d.name AS department,
+    r.requested_start AS starts,
+    TIMESTAMPADD(MINUTE, r.duration_minutes, r.requested_start) AS ends
+FROM maintenance_requests r
+JOIN sections s ON s.id = r.section_id
+JOIN departments d ON d.id = r.department_id
+WHERE r.status = 'Approved';
 
 
 -- Show total requests and approved requests for each section
