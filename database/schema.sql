@@ -54,6 +54,12 @@ CREATE TABLE sections (
     is_active BOOLEAN DEFAULT TRUE
 );
 
+CREATE TABLE assets (
+    id INT AUTO_INCREMENT PRIMARY KEY,
+    name VARCHAR(100) NOT NULL,
+    section_id INT,
+    FOREIGN KEY (section_id) REFERENCES sections(id)
+);
 
 -- Stores train timings for each railway section
 CREATE TABLE train_timetable (
