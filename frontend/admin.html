@@ -1,0 +1,96 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <title>Admin Panel</title>
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+  <div class="top">
+    <h1>SmartBlock Admin Panel</h1>
+    <button class="grey" onclick="logout()">Logout</button>
+  </div>
+
+  <div class="cards">
+    <div class="card">All requests<b id="total">0</b></div>
+    <div class="card">Waiting for approval<b id="pending">0</b></div>
+    <div class="card">Approved<b id="approved">0</b></div>
+    <div class="card">Rejected<b id="rejected">0</b></div>
+  </div>
+
+  <div class="box">
+    <h2>Requests Waiting for Approval</h2>
+    <table>
+      <thead><tr><th>ID</th><th>Department</th><th>Section</th><th>Work</th><th>Duration</th><th>Priority</th><th>Action</th></tr></thead>
+      <tbody id="pendingTable"></tbody>
+    </table>
+  </div>
+
+  <div class="box">
+    <h2>Monitor Departments</h2>
+    <select id="filter" onchange="show()">
+      <option value="All">All departments</option>
+      <option>Engineering</option>
+      <option>Signal</option>
+      <option>Traction</option>
+    </select>
+    <table>
+      <thead><tr><th>ID</th><th>Department</th><th>Section</th><th>Work</th><th>Duration</th><th>Priority</th><th>Status</th></tr></thead>
+      <tbody id="allTable"></tbody>
+    </table>
+  </div>
+
+  <div class="box">
+    <h2>Today's Block Plan</h2>
+    <table>
+      <thead><tr><th>Time</th><th>Section</th><th>Department</th><th>Work</th><th>Priority</th></tr></thead>
+      <tbody id="planTable"></tbody>
+    </table>
+  </div>
+
+  <script src="script.js"></script>
+  <script>
+    checkLogin('admin');
+
+    function row(r, lastCell) {
+      return '<tr><td>P' + r.id + '</td><td>' + r.dept + '</td><td>' + r.section + '</td><td>' + safe(r.work) +
+             '</td><td>' + r.duration + ' min</td><td>' + PRIORITIES[r.priority] + '</td><td>' + lastCell + '</td></tr>';
+    }
+
+    function show() {
+      var list = getRequests();
+      var count = function (s) { return list.filter(function (r) { return r.status === s; }).length; };
+
+      document.getElementById('total').textContent = list.length;
+      document.getElementById('pending').textContent = count('Pending');
+      document.getElementById('approved').textContent = count('Approved');
+      document.getElementById('rejected').textContent = count('Rejected');
+
+      var pending = list.filter(function (r) { return r.status === 'Pending'; });
+      document.getElementById('pendingTable').innerHTML = pending.length === 0
+        ? '<tr><td colspan="7">Nothing waiting. All done!</td></tr>'
+        : pending.map(function (r) {
+            return row(r, '<button class="green" onclick="decide(' + r.id + ',\'Approved\')">Approve</button> ' +
+                          '<button class="red" onclick="decide(' + r.id + ',\'Rejected\')">Reject</button>');
+          }).join('');
+
+      var dept = document.getElementById('filter').value;
+      var shown = list.filter(function (r) { return dept === 'All' || r.dept === dept; });
+      document.getElementById('allTable').innerHTML = shown.length === 0
+        ? '<tr><td colspan="7">No requests.</td></tr>'
+        : shown.map(function (r) { return row(r, '<span class="' + r.status + '">' + r.status + '</span>'); }).join('');
+
+      document.getElementById('planTable').innerHTML = planRows();
+    }
+
+    function decide(id, status) {
+      var list = getRequests();
+      list.forEach(function (r) { if (r.id === id) r.status = status; });
+      saveRequests(list);
+      show();
+    }
+
+    show();
+    setInterval(show, 3000);   // pick up new department requests automatically
+  </script>
+</body>
+</html>
