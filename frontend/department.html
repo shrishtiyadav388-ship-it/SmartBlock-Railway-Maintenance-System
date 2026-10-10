@@ -1,0 +1,103 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <title>Department Panel</title>
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+  <div class="top">
+    <h1 id="title">Department Panel</h1>
+    <button class="grey" onclick="logout()">Logout</button>
+  </div>
+
+  <div class="cards">
+    <div class="card">My requests<b id="total">0</b></div>
+    <div class="card">Pending<b id="pending">0</b></div>
+    <div class="card">Approved<b id="approved">0</b></div>
+    <div class="card">Rejected<b id="rejected">0</b></div>
+  </div>
+
+  <div class="box">
+    <h2>Send a New Request</h2>
+    <select id="section"><option>S1</option><option>S2</option><option>S3</option></select>
+    <input type="text" id="work" placeholder="Work (e.g. Rail inspection)">
+    <input type="number" id="duration" value="60" min="15" step="15" style="width:90px"> min
+    <select id="priority">
+      <option value="1">Critical</option>
+      <option value="2" selected>High</option>
+      <option value="3">Medium</option>
+      <option value="4">Low</option>
+    </select>
+    <button onclick="addRequest()">Send to Admin</button>
+    <div class="error" id="msg"></div>
+  </div>
+
+  <div class="box">
+    <h2>My Requests</h2>
+    <table>
+      <thead><tr><th>ID</th><th>Section</th><th>Work</th><th>Duration</th><th>Priority</th><th>Status</th></tr></thead>
+      <tbody id="myTable"></tbody>
+    </table>
+  </div>
+
+  <div class="box">
+    <h2>Today's Block Plan (approved by admin)</h2>
+    <table>
+      <thead><tr><th>Time</th><th>Section</th><th>Department</th><th>Work</th><th>Priority</th></tr></thead>
+      <tbody id="planTable"></tbody>
+    </table>
+  </div>
+
+  <script src="script.js"></script>
+  <script>
+    var user = checkLogin('department');
+    document.getElementById('title').textContent = user.dept + ' Department Panel';
+
+    function show() {
+      var mine = getRequests().filter(function (r) { return r.dept === user.dept; });
+      var count = function (s) { return mine.filter(function (r) { return r.status === s; }).length; };
+
+      document.getElementById('total').textContent = mine.length;
+      document.getElementById('pending').textContent = count('Pending');
+      document.getElementById('approved').textContent = count('Approved');
+      document.getElementById('rejected').textContent = count('Rejected');
+
+      document.getElementById('myTable').innerHTML = mine.length === 0
+        ? '<tr><td colspan="6">No requests yet.</td></tr>'
+        : mine.map(function (r) {
+            return '<tr><td>P' + r.id + '</td><td>' + r.section + '</td><td>' + safe(r.work) + '</td><td>' +
+                   r.duration + ' min</td><td>' + PRIORITIES[r.priority] + '</td><td class="' + r.status + '">' + r.status + '</td></tr>';
+          }).join('');
+
+      document.getElementById('planTable').innerHTML = planRows();
+    }
+
+    function addRequest() {
+      var work = document.getElementById('work').value.trim();
+      var duration = parseInt(document.getElementById('duration').value, 10);
+      if (work === '' || !duration || duration < 15) {
+        document.getElementById('msg').textContent = 'Please enter the work and a valid duration.';
+        return;
+      }
+      var list = getRequests();
+      var newId = list.length ? Math.max.apply(null, list.map(function (r) { return r.id; })) + 1 : 1;
+      list.push({
+        id: newId,
+        dept: user.dept,
+        section: document.getElementById('section').value,
+        work: work,
+        duration: duration,
+        priority: parseInt(document.getElementById('priority').value, 10),
+        status: 'Pending'
+      });
+      saveRequests(list);
+      document.getElementById('work').value = '';
+      document.getElementById('msg').textContent = '';
+      show();
+    }
+
+    show();
+    setInterval(show, 3000);   // refresh so admin decisions appear automatically
+  </script>
+</body>
+</html>
