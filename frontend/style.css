@@ -1,0 +1,23 @@
+body { font-family: Arial, sans-serif; background: #0b1220; color: #e6ecf6; margin: 0; padding: 20px; }
+h1 { color: #33b7e8; margin: 0; font-size: 22px; }
+h2 { font-size: 16px; margin: 0 0 10px; color: #33b7e8; }
+.top { display: flex; justify-content: space-between; align-items: center; border-bottom: 1px solid #1e2c47; padding-bottom: 12px; margin-bottom: 20px; }
+.box { background: #121c30; border: 1px solid #1e2c47; border-radius: 6px; padding: 16px; margin-bottom: 20px; }
+.cards { display: flex; gap: 12px; margin-bottom: 20px; flex-wrap: wrap; }
+.card { background: #121c30; border-left: 4px solid #33b7e8; padding: 12px 18px; min-width: 130px; }
+.card b { display: block; font-size: 26px; margin-top: 4px; }
+table { width: 100%; border-collapse: collapse; font-size: 14px; }
+th { text-align: left; color: #8494b3; padding: 8px; border-bottom: 1px solid #1e2c47; }
+td { padding: 8px; border-bottom: 1px solid #1e2c47; }
+input, select { background: #0b1220; color: #e6ecf6; border: 1px solid #2a3d5f; padding: 8px; border-radius: 4px; margin: 4px 6px 4px 0; }
+button { background: #33b7e8; color: #04202b; border: none; padding: 8px 14px; border-radius: 4px; cursor: pointer; font-weight: bold; }
+button.green { background: #33c17a; }
+button.red { background: #e0524d; color: white; }
+button.grey { background: #2a3d5f; color: white; }
+.Pending { color: #e8a53a; }
+.Approved { color: #33c17a; }
+.Rejected { color: #e0524d; }
+.login-box { max-width: 340px; margin: 80px auto; }
+.login-box input { width: 100%; box-sizing: border-box; margin: 6px 0 12px; }
+.error { color: #e0524d; min-height: 20px; }
+.hint { color: #8494b3; font-size: 13px; }
