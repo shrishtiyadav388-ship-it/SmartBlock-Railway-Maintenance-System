@@ -126,3 +126,130 @@ function showTabsForRole(role) {
         tab.classList.toggle('hidden', !allowed.includes(role));
     });
 }
+
+function setWorkExamples(dept) {
+    const field = byId('fWork');
+    if (!field) return;
+
+    const examples = {
+        Engineering: 'e.g. Replace damaged sleepers near a joint',
+        Signal: 'e.g. Inspect signal cable near the junction',
+        Traction: 'e.g. Repair a damaged overhead wire'
+    };
+    field.placeholder = examples[dept] || 'Describe the maintenance work';
+}
+
+async function doLogout() {
+    await api('/api/logout', 'POST');
+    location.reload();
+}
+
+window.setInterval(() => {
+    if (!currentRole) return;
+    if (currentRole === 'CONTROL') loadControlWorkAlert();
+    if (currentRole === 'DEPARTMENT') loadDepartmentStatusAlert();
+    const page = byId('completion');
+    if (page && !page.classList.contains('hidden')) loadCompletionTab();
+}, 60000);
+
+window.onload = async function () {
+    setDefaultDates();
+    const me = await api('/api/me');
+    if (me.loggedIn) openApp(me.username, me.role, me.dept);
+};
+
+function localToday() {
+    const now = new Date();
+    return now.getFullYear() + '-' + String(now.getMonth() + 1).padStart(2, '0')
+        + '-' + String(now.getDate()).padStart(2, '0');
+}
+
+function setDefaultDates() {
+    const today = localToday();
+    const nextDate = new Date();
+    nextDate.setDate(nextDate.getDate() + 1);
+    const tomorrow = isoDate(nextDate);
+    ['fDate', 'engineDate', 'planDate', 'savedPlanDate', 'dashDate'].forEach(id => {
+        const input = byId(id);
+        if (input && !input.value) input.value = tomorrow;
+    });
+    const requestDate = byId('fDate');
+    if (requestDate) requestDate.min = today;
+}
+
+function getPlanningDate() {
+    return byId('planDate')?.value
+        || byId('engineDate')?.value || localToday();
+}
+
+function displayDate(isoDate) {
+    if (!isoDate) return '';
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(String(isoDate))) return String(isoDate);
+    const date = new Date(isoDate + 'T12:00:00');
+    return date.toLocaleDateString(undefined, { weekday: 'long', year: 'numeric', month: 'short', day: 'numeric' });
+}
+
+function syncPlannerDate(sourceId) {
+    const source = byId(sourceId);
+    ['engineDate', 'planDate'].filter(id => id !== sourceId).forEach(id => {
+        const other = byId(id);
+        if (other && source) other.value = source.value;
+    });
+    ['conflictBox', 'schedBox', 'allocBox', 'planBox', 'approveBox'].forEach(id => {
+        const box = byId(id);
+        if (box) box.innerHTML = '';
+    });
+}
+
+function showTab(name, button) {
+    document.querySelectorAll('.page').forEach(p => p.classList.add('hidden'));
+    byId(name).classList.remove('hidden');
+
+    document.querySelectorAll('.tab').forEach(t => t.classList.remove('active'));
+    button.classList.add('active');
+
+    if (name === 'dashboard') {
+        loadDashboard();
+        if (currentRole === 'CONTROL') loadControlWorkAlert();
+    }
+    if (name === 'completion') loadCompletionTab();
+    if (name === 'reports') loadReports();
+    if (name === 'plan') loadSavedPlans();
+}
+
+function escapeHtml(value) {
+    return String(value ?? '').replace(/[&<>\"']/g, ch => ({
+        '&': '&amp;', '<': '&lt;', '>': '&gt;', '\"': '&quot;', "'": '&#39;'
+    }[ch]));
+}
+
+function sectionLabel(sectionId) {
+    return String(sectionId ?? '');
+}
+
+function makeTable(rows, columns, titles) {
+    if (!rows || rows.length === 0) return '<p class="note">Nothing to show yet.</p>';
+
+    let html = '<table><tr>';
+    titles.forEach(t => html += '<th>' + t + '</th>');
+    html += '</tr>';
+
+    rows.forEach(row => {
+        html += '<tr>';
+        columns.forEach(col => {
+            let value = row[col];
+            if (value === null || value === undefined) value = '-';
+
+            if (col === 'sectionId' || col === 'section_id') value = sectionLabel(value);
+            if (col === 'workDate' || col === 'work_date' || col === 'schedule_date') value = displayDate(value);
+
+            const safeValue = escapeHtml(value);
+            if (col === 'priority') {
+                const allowedPriority = ['Critical', 'High', 'Medium', 'Low'].includes(String(value)) ? String(value) : 'Low';
+                html += '<td class="p-' + allowedPriority + '">' + safeValue + '</td>';
+            } else {
+                html += '<td>' + safeValue + '</td>';
+            }
+        });
+        html += '</tr>';
+    });
