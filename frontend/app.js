@@ -663,3 +663,226 @@ async function submitTask() {
         byId('requestMsg').textContent = 'Choose S1, S2 or S3, then check the date, work description, duration and time window.';
         return;
     }
+const oldText = button ? button.textContent : '';
+    if (button) { button.disabled = true; button.textContent = 'Sending...'; button.setAttribute('aria-busy', 'true'); }
+    byId('requestMsg').textContent = 'Saving request...';
+    try {
+        const result = await api('/api/tasks', 'POST', form);
+        byId('requestMsg').textContent = result.ok
+            ? result.message
+            : (result.message || 'Request could not be saved.');
+        if (result.ok) {
+            byId('fWork').value = '';
+            byId('fSection').value = '';
+            byId('fRevisesTaskId').value = '';
+            byId('revisionNotice').textContent = '';
+            byId('revisionNotice').classList.add('hidden');
+            if (currentRole === 'DEPARTMENT') await loadMyRequests();
+        }
+    } catch (error) {
+        console.error('Request submission failed:', error);
+        byId('requestMsg').textContent = 'Request failed. Check the application terminal and try again.';
+    } finally {
+        if (button && button.isConnected) {
+            button.disabled = false;
+            button.textContent = oldText;
+            button.removeAttribute('aria-busy');
+        }
+    }
+}
+
+async function loadCompletionPanel() {
+    if (currentRole !== 'CONTROL') return;
+    const panel = byId('completionStatusPanel');
+    if (panel) panel.classList.remove('hidden');
+    const result = await api('/api/control/completion-status');
+    const summary = byId('completionSummary');
+    const table = byId('completionTable');
+    if (!result || result.ok === false || !Array.isArray(result.tasks)) {
+        summary.innerHTML = '';
+        table.innerHTML = '<p class="error">' + escapeHtml(result?.message || 'Could not load work status. Check MySQL and the app terminal.') + '</p>';
+        return;
+    }
+    const tasks = result.tasks;
+    const count = (...states) => tasks.filter(task => states.includes(String(task.completionStatus || '').toUpperCase())).length;
+    summary.innerHTML = [
+        ['No report', count('REPORT_MISSING', 'OVERDUE'), 'red'],
+        ['Needs follow-up', count('NOT_COMPLETED', 'NEEDS_FOLLOW_UP'), 'red'],
+        ['Waiting for check', count('AWAITING_VERIFICATION', 'REPORTED'), 'amber'],
+        ['Verified complete', count('COMPLETED'), 'green']
+    ].map(item => '<div class="card ' + item[2] + '"><div class="num">' + item[1] + '</div><div class="lbl">' + item[0] + '</div></div>').join('');
+    if (!tasks.length) {
+        table.innerHTML = '<div class="empty-state"><strong>No approved work yet</strong><p>After a job is approved, its completion status appears here.</p></div>';
+        return;
+    }
+    let html = '<table><thead><tr><th>Task</th><th>Date</th><th>Department</th><th>Work</th><th>Status</th><th>Update / Control note</th><th>Action</th></tr></thead><tbody>';
+    tasks.forEach(task => {
+        const state = String(task.completionStatus || '').toUpperCase();
+        let action = '<span class="note">No action</span>';
+        if (state === 'AWAITING_VERIFICATION') {
+            action = '<div class="decision-actions"><button class="btn-small" data-completion-action="CONFIRM" data-task-id="' + escapeHtml(task.taskId) + '">Verify complete</button>'
+                + '<button class="btn-small btn-danger" data-completion-action="RETURN" data-task-id="' + escapeHtml(task.taskId) + '">Return</button></div>';
+        } else if (['REPORT_MISSING', 'OVERDUE'].includes(state)) {
+            const requestLabel = task.statusRequestedAt ? 'Send reminder' : 'Request status';
+            action = '<div class="decision-actions"><button class="btn-small" data-request-status-task="' + escapeHtml(task.taskId) + '">' + requestLabel + '</button>'
+                + '<button class="btn-small btn-danger" data-reschedule-task="' + escapeHtml(task.taskId) + '">Request new time</button></div>';
+        } else if (['NOT_COMPLETED', 'NEEDS_FOLLOW_UP'].includes(state)) {
+            action = '<div class="decision-actions"><button class="btn-small" data-follow-up-task="' + escapeHtml(task.taskId) + '">Record follow-up</button>'
+                + '<button class="btn-small btn-danger" data-reschedule-task="' + escapeHtml(task.taskId) + '">Request new time</button></div>';
+        }
+        let update = escapeHtml(task.reportedAt || '-');
+        if (task.reportedBy) update += '<div class="note">Department: ' + escapeHtml(task.reportedBy) + '</div>';
+        if (task.completionReportNote) update += '<div class="note">' + escapeHtml(task.completionReportNote) + '</div>';
+        if (task.statusRequestNote) update += '<div class="note"><strong>Message sent: </strong>' + escapeHtml(task.statusRequestNote)
+            + (task.statusRequestedAt ? ' (' + escapeHtml(task.statusRequestedAt) + ')' : '') + '</div>';
+        if (task.completionNote) update += '<div class="note">Control Room note: ' + escapeHtml(task.completionNote) + '</div>';
+        if (task.completedAt) update += '<div class="note">Verified ' + escapeHtml(task.completedAt) + (task.completedBy ? ' by ' + escapeHtml(task.completedBy) : '') + '</div>';
+        html += '<tr><td><strong>' + escapeHtml(task.taskId) + '</strong></td>'
+            + '<td>' + escapeHtml(displayDate(task.workDate)) + '</td>'
+            + '<td>' + escapeHtml(task.department) + '</td>'
+            + '<td>' + escapeHtml(task.workDesc || '-') + '</td>'
+            + '<td><span class="tag ' + completionTagClass(state) + '">' + escapeHtml(completionStatusLabel(state)) + '</span></td>'
+            + '<td>' + update + '</td><td>' + action + '</td></tr>';
+    });
+    table.innerHTML = html + '</tbody></table>';
+}
+
+async function loadCompletionTab() {
+    const controlPanel = byId('completionStatusPanel');
+    const departmentPanel = byId('departmentCompletionPanel');
+    if (currentRole === 'CONTROL') {
+        if (controlPanel) controlPanel.classList.remove('hidden');
+        if (departmentPanel) departmentPanel.classList.add('hidden');
+        await loadCompletionPanel();
+    } else if (currentRole === 'DEPARTMENT') {
+        if (controlPanel) controlPanel.classList.add('hidden');
+        if (departmentPanel) departmentPanel.classList.remove('hidden');
+        await loadDepartmentCompletion();
+    }
+}
+
+async function loadDepartmentCompletion() {
+    if (currentRole !== 'DEPARTMENT') return;
+    const table = byId('departmentCompletionTable');
+    const result = await api('/api/my-requests');
+    if (!Array.isArray(result)) {
+        table.innerHTML = '<p class="error">' + escapeHtml(result?.message || 'Could not load work status. Check the app terminal.') + '</p>';
+        return;
+    }
+
+    const tasks = result.filter(task => String(task.status || '').toUpperCase() === 'APPROVED');
+    if (!tasks.length) {
+        table.innerHTML = '<div class="empty-state"><strong>No approved work yet</strong><p>Approved work will appear here.</p></div>';
+        return;
+    }
+
+    let html = '<table><thead><tr><th>Task / work</th><th>Date</th><th>Approved time</th><th>Status</th><th>Your update</th><th>Action</th></tr></thead><tbody>';
+    tasks.forEach(task => {
+        const taskId = String(task.task_id || '');
+        const state = String(task.completion_status || 'SCHEDULED').toUpperCase();
+        const workDate = String(task.schedule_date || task.work_date || '').slice(0, 10);
+        const start = String(task.start_time || '').slice(0, 5);
+        const end = String(task.end_time || '').slice(0, 5);
+        const hasBlock = Boolean(task.schedule_date && start && end);
+        // These flags come from MySQL, so the page and server use the same clock.
+        const slotHasStarted = hasBlock && Number(task.work_started) === 1;
+        const slotHasEnded = hasBlock && Number(task.work_ended) === 1;
+        let action = hasBlock
+            ? '<span class="note">Status buttons open at ' + escapeHtml(start || 'the approved start time') + '.</span>'
+            : '<span class="note">Waiting for Control Room to approve a time slot.</span>';
+        if (hasBlock && slotHasStarted && !['COMPLETED', 'AWAITING_VERIFICATION', 'REPORTED'].includes(state)) {
+            action = '<div class="decision-actions">'
+                + '<button type="button" class="btn-small" data-dept-work-action="COMPLETED" data-task-id="' + escapeHtml(taskId) + '">Report completed</button>'
+                + '<button type="button" class="btn-small btn-danger" data-dept-work-action="NOT_COMPLETED" data-task-id="' + escapeHtml(taskId) + '">' + (slotHasEnded ? 'Report not completed' : 'Report delay') + '</button>'
+                + '</div>';
+        } else if (state === 'COMPLETED') {
+            action = '<span class="tag good">Verified</span>';
+        } else if (['AWAITING_VERIFICATION', 'REPORTED'].includes(state)) {
+            action = '<span class="tag pending">Awaiting Control Room</span>';
+        }
+        html += '<tr><td><strong>' + escapeHtml(taskId) + '</strong><div class="note">' + escapeHtml(task.work_desc || '-') + '</div></td>'
+            + '<td>' + escapeHtml(displayDate(workDate)) + '</td>'
+            + '<td>' + escapeHtml(start && end ? start + ' – ' + end : 'Not assigned') + '</td>'
+            + '<td><span class="tag ' + completionTagClass(state) + '">' + escapeHtml(completionStatusLabel(state)) + '</span></td>'
+            + '<td>' + escapeHtml(task.completion_reported_at || '-')
+            + (task.completion_report_note ? '<div class="note">' + escapeHtml(task.completion_report_note) + '</div>' : '')
+            + (task.status_request_note ? '<div class="note"><strong>Control Room message (' + escapeHtml(task.status_requested_at || '') + '): </strong>' + escapeHtml(task.status_request_note) + '</div>' : '')
+            + (task.completion_note ? '<div class="note">Control Room note: ' + escapeHtml(task.completion_note) + '</div>' : '') + '</td>'
+            + '<td>' + action + '</td></tr>';
+    });
+    table.innerHTML = html + '</tbody></table>';
+}
+
+async function refreshControlViews() {
+    if (byId('completion') && !byId('completion').classList.contains('hidden')) await loadCompletionTab();
+    if (byId('dashboard') && !byId('dashboard').classList.contains('hidden')) await loadDashboard();
+    await loadControlWorkAlert();
+}
+
+async function requestNewSlot(taskId, button) {
+    const reason = await askForText('Why is a new time needed? (5–500 characters)');
+    if (reason === null) return;
+    if (reason.trim().length < 5 || reason.trim().length > 500) {
+        alert('Enter a reason (5–500 characters).');
+        return;
+    }
+    if (!confirm('Ask for a new time for ' + taskId + '? The old approval stays in history.')) return;
+
+    const originalText = button ? button.textContent : '';
+    if (button) { button.disabled = true; button.textContent = 'Sending...'; button.setAttribute('aria-busy', 'true'); }
+    try {
+        const result = await api('/api/control/tasks/' + encodeURIComponent(taskId) + '/reschedule', 'POST', { reason: reason.trim() });
+        alert(result.message || (result.ok ? 'New slot requested.' : 'Could not request a new time.'));
+        if (result.ok) await refreshControlViews();
+    } finally {
+        if (button && button.isConnected) { button.disabled = false; button.textContent = originalText; button.removeAttribute('aria-busy'); }
+    }
+}
+
+async function markTaskCompleted(taskId, action, button) {
+    if (button && button.disabled) return;
+
+    // Ask for the report before showing the button as busy.
+    const completed = action === 'COMPLETED';
+    const note = await askForText(completed
+        ? 'What work was done? (5–500 characters)'
+        : 'Why was the work not finished? (5–500 characters)');
+    if (note === null) return;
+    if (note.trim().length < 5 || note.trim().length > 500) {
+        alert('Enter a note (5–500 characters).');
+        return;
+    }
+    const originalText = button ? button.textContent : '';
+    if (button) {
+        button.disabled = true;
+        button.textContent = 'Sending...';
+        button.setAttribute('aria-busy', 'true');
+    }
+
+    try {
+        const result = await api('/api/my-requests/' + encodeURIComponent(taskId) + '/complete', 'POST', { action, note: note.trim() });
+        alert(result.message || (result.ok ? 'Work status sent.' : 'Work status was not sent.'));
+        if (result.ok) {
+            await loadDepartmentCompletion();
+            if (byId('dashboard') && !byId('dashboard').classList.contains('hidden')) await loadMyRequests();
+        }
+    } catch (error) {
+        alert('Could not send the work status. Check the app terminal and try again.');
+    } finally {
+        // The table refresh may remove this button; only restore it if still present.
+        if (button && button.isConnected) {
+            button.disabled = false;
+            button.textContent = originalText;
+            button.removeAttribute('aria-busy');
+        }
+    }
+}
+
+async function requestDepartmentStatus(taskId, button) {
+    const defaultMessage = 'Please send the completion status and a short work report for task ' + taskId + ' in SmartBlock.';
+    const note = await askForText('Message to the department:', defaultMessage);
+    if (note === null) return;
+    if (note.trim().length < 5 || note.trim().length > 500) {
+        alert('Enter a message between 5 and 500 characters.');
+        return;
+    }
