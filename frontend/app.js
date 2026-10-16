@@ -38,7 +38,6 @@ async function api(url, method, body) {
     }
 }
 
-// Use an in-page dialog because some browsers disable native text prompts.
 function askForText(message, defaultValue = '') {
     return new Promise(resolve => {
         const backdrop = document.createElement('div');
@@ -842,7 +841,6 @@ async function requestNewSlot(taskId, button) {
 async function markTaskCompleted(taskId, action, button) {
     if (button && button.disabled) return;
 
-    // Ask for the report before showing the button as busy.
     const completed = action === 'COMPLETED';
     const note = await askForText(completed
         ? 'What work was done? (5–500 characters)'
@@ -886,3 +884,244 @@ async function requestDepartmentStatus(taskId, button) {
         alert('Enter a message between 5 and 500 characters.');
         return;
     }
+const originalText = button ? button.textContent : '';
+    if (button) { button.disabled = true; button.textContent = 'Sending...'; button.setAttribute('aria-busy', 'true'); }
+    try {
+        const result = await api('/api/control/tasks/' + encodeURIComponent(taskId) + '/request-status', 'POST', { note: note.trim() });
+        alert(result.message || (result.ok ? 'Status request sent.' : 'Could not send status request.'));
+        if (result.ok) await refreshControlViews();
+    } finally {
+        if (button && button.isConnected) { button.disabled = false; button.textContent = originalText; button.removeAttribute('aria-busy'); }
+    }
+}
+
+async function recordControlFollowUp(taskId, button) {
+    const note = await askForText('What did you do to follow up? (5–500 characters)');
+    if (note === null) return;
+    if (note.trim().length < 5 || note.trim().length > 500) {
+        alert('Enter a follow-up note (5–500 characters).');
+        return;
+    }
+    const originalText = button ? button.textContent : '';
+    if (button) { button.disabled = true; button.textContent = 'Saving...'; button.setAttribute('aria-busy', 'true'); }
+    try {
+        const result = await api('/api/control/tasks/' + encodeURIComponent(taskId) + '/follow-up', 'POST', { note: note.trim() });
+        alert(result.message || (result.ok ? 'Follow-up saved.' : 'Could not save the follow-up.'));
+        if (result.ok) await refreshControlViews();
+    } finally {
+        if (button && button.isConnected) { button.disabled = false; button.textContent = originalText; button.removeAttribute('aria-busy'); }
+    }
+}
+
+async function verifyTaskCompletion(taskId, action, button) {
+    let note = '';
+    if (action === 'RETURN') {
+        note = await askForText('Why are you returning this report? (5–500 characters)');
+        if (note === null) return;
+        if (note.trim().length < 5 || note.trim().length > 500) {
+            alert('Enter a return reason (5–500 characters).');
+            return;
+        }
+    } else {
+        note = await askForText('Optional note (press OK to skip):') || '';
+        if (note.trim().length > 500) {
+            alert('Keep the note under 500 characters.');
+            return;
+        }
+    }
+    if (!confirm(action === 'CONFIRM'
+        ? 'Mark ' + taskId + ' as verified complete?'
+        : 'Return ' + taskId + ' to the department for follow-up?')) return;
+
+    const originalText = button ? button.textContent : '';
+    if (button) { button.disabled = true; button.textContent = 'Saving...'; button.setAttribute('aria-busy', 'true'); }
+    try {
+        const result = await api('/api/control/tasks/' + encodeURIComponent(taskId) + '/completion', 'POST', { action, note: note.trim() });
+        alert(result.message || (result.ok ? 'Saved.' : 'Could not save completion decision.'));
+        if (result.ok) await refreshControlViews();
+    } finally {
+        if (button && button.isConnected) { button.disabled = false; button.textContent = originalText; button.removeAttribute('aria-busy'); }
+    }
+}
+
+async function loadConflicts() {
+    const date = getPlanningDate();
+    const conflicts = await api('/api/conflicts?date=' + encodeURIComponent(date));
+    const box = byId('conflictBox');
+    if (!Array.isArray(conflicts)) {
+        box.innerHTML = '<p class="error">' + escapeHtml(conflicts?.message || 'Could not check conflicts. Check the app and database.') + '</p>';
+        return;
+    }
+
+    if (conflicts.length === 0) {
+        box.innerHTML = '<p class="note">Date: ' + date + '</p><p><span class="tag good">No conflicts on this date</span></p>';
+        return;
+    }
+
+    let html = '<p class="note">Conflicts on ' + displayDate(date) + '</p><table><tr><th>Section</th><th>Request A</th><th>Request B</th><th>Result</th></tr>';
+    conflicts.forEach(c => {
+        html += '<tr><td>' + sectionLabel(c.sectionId) + '</td><td>' + c.taskA + '</td><td>' + c.taskB
+              + '</td><td><span class="tag bad">overlap</span></td></tr>';
+    });
+    box.innerHTML = html + '</table>';
+}
+
+async function loadScheduling() {
+    const date = getPlanningDate();
+    const data = await api('/api/scheduling?date=' + encodeURIComponent(date));
+    if (!data || !Array.isArray(data.fcfs) || !Array.isArray(data.sjf)
+            || !Array.isArray(data.priority) || !Number.isFinite(Number(data.fcfsAverage))) {
+        byId('schedBox').innerHTML = '<p class="error">' + escapeHtml(data?.message || 'Could not compare schedules. Check the app and database.') + '</p>';
+        return;
+    }
+
+    const columns = ['taskId', 'department', 'sectionId', 'priority', 'start', 'end', 'waitingMin'];
+    const titles = ['Task', 'Department', 'Section', 'Priority', 'Start', 'End', 'Waited (min)'];
+
+    let html = '<p class="note">Requests for ' + displayDate(date) + ' only.</p>';
+    html += '<div class="sub-head">FCFS — first come, first served</div>';
+    html += makeTable(data.fcfs, columns, titles);
+    html += '<p class="note">Average waiting time: ' + data.fcfsAverage.toFixed(1) + ' min</p>';
+
+    html += '<div class="sub-head">SJF — shortest job first</div>';
+    html += makeTable(data.sjf, columns, titles);
+    html += '<p class="note">Average waiting time: ' + data.sjfAverage.toFixed(1) + ' min</p>';
+
+    html += '<div class="sub-head">Priority — highest priority first</div>';
+    html += makeTable(data.priority, columns, titles);
+    html += '<p class="note">Average waiting time: ' + data.priorityAverage.toFixed(1) + ' min</p>';
+    html += '<p class="note">While building a day’s plan, jobs waiting for a suitable slot can gain priority. “Ask for a new time” is a separate action when a request cannot fit its requested window.</p>';
+
+    byId('schedBox').innerHTML = html;
+}
+
+async function loadAllocation() {
+    const rows = await api('/api/allocation?date=' + encodeURIComponent(getPlanningDate()));
+    if (!Array.isArray(rows)) {
+        byId('allocBox').innerHTML = '<p class="error">' + escapeHtml(rows?.message || 'Could not check resource allocation. Check the app and database.') + '</p>';
+        return;
+    }
+    byId('allocBox').innerHTML = makeTable(
+        rows, ['taskId', 'sectionId', 'status', 'start', 'end'], ['Task', 'Section', 'Result', 'Start', 'End']);
+}
+
+async function loadPlan() {
+    const date = getPlanningDate();
+    const data = await api('/api/plan?date=' + encodeURIComponent(date));
+    if (!data || !Array.isArray(data.plan)) {
+        byId('planBox').innerHTML = '<p class="error">' + escapeHtml(data?.message || 'Could not build the plan. Check the app and database.') + '</p>';
+        return;
+    }
+
+    let html = makeTable(data.plan,
+        ['sectionId', 'taskId', 'department', 'priority', 'scheduleStatus', 'effectiveRank', 'start', 'end', 'waitingMin', 'reason'],
+        ['Section', 'Task', 'Department', 'Priority', 'Status', 'Effective rank', 'Start', 'End', 'Wait (min)', 'Why this slot']);
+
+    html = '<p class="note"><b>Plan date:</b> ' + displayDate(date) + '</p>' + html;
+    html += '<p class="ok-msg">' + escapeHtml(data.verification) + '</p>';
+    html += '<p class="note">' + (data.note || '') + '</p>';
+    html += '<p class="note">The scheduler suggests times. MySQL checks for conflicts before approval.</p>';
+    byId('planBox').innerHTML = html;
+}
+
+async function approvePlan() {
+    const date = getPlanningDate();
+    const data = await api('/api/plan/approve?date=' + encodeURIComponent(date), 'POST');
+    if (!data || !Array.isArray(data.saved) || !Array.isArray(data.failed)) {
+        byId('approveBox').innerHTML = '<p class="error">' + escapeHtml(data?.message || 'Could not save the plan. Check the app and database.') + '</p>';
+        return;
+    }
+
+    let html = '<div class="sub-head">Approval result for ' + escapeHtml(data.date || date) + '</div>';
+    data.saved.forEach(line => html += '<p class="note">Saved: ' + escapeHtml(line) + '</p>');
+    data.failed.forEach(line => html += '<p class="note">Not saved: ' + escapeHtml(line) + '</p>');
+
+    byId('approveBox').innerHTML = html;
+    loadDashboard();
+}
+
+function isoDate(date) {
+    return date.getFullYear() + '-' + String(date.getMonth() + 1).padStart(2, '0') + '-' + String(date.getDate()).padStart(2, '0');
+}
+
+async function loadSavedPlans() {
+    const refValue = byId('savedPlanDate')?.value || localToday();
+    const mode = byId('savedPlanRange')?.value || 'day';
+    const ref = new Date(refValue + 'T12:00:00');
+    const range = getDashboardRange(refValue, mode);
+    let periodLabel = displayDate(refValue);
+    if (mode === 'week') periodLabel = displayDate(range.from) + ' – ' + displayDate(range.to);
+    if (mode === 'month') periodLabel = ref.toLocaleDateString(undefined, { month: 'long', year: 'numeric' });
+
+    const result = await api('/api/reports/blocks-range?from=' + encodeURIComponent(range.from)
+        + '&to=' + encodeURIComponent(range.to));
+    const summary = byId('savedPlanSummary');
+    const box = byId('savedPlanBox');
+    if (!result || result.ok === false) {
+        summary.textContent = result?.message || 'Could not load saved plans. Check the app and database.';
+        box.innerHTML = '';
+        return;
+    }
+    const blocks = result.blocks || [];
+    const uniqueDays = new Set(blocks.map(b => String(b.schedule_date).slice(0, 10))).size;
+    summary.innerHTML = '<div class="mini-stat"><strong>' + blocks.length + '</strong><span>approved blocks</span></div>'
+        + '<div class="mini-stat"><strong>' + uniqueDays + '</strong><span>days with approvals</span></div>'
+        + '<div class="mini-stat"><strong>' + escapeHtml(periodLabel) + '</strong><span>selected period</span></div>';
+    if (!blocks.length) {
+        box.innerHTML = '<div class="empty-state"><strong>No saved plans for this period</strong><p>Create and approve a plan, then search again.</p></div>';
+        return;
+    }
+    box.innerHTML = makeTable(blocks,
+        ['block_id', 'schedule_date', 'start_time', 'end_time', 'section_id', 'task_id', 'work_desc', 'dept_name', 'priority', 'approved_by'],
+        ['Block', 'Date', 'Start', 'End', 'Section', 'Task', 'Work', 'Department', 'Priority', 'Approved by']);
+}
+
+async function loadReports() {
+    const blocks = await api('/api/reports/blocks');
+    const departments = await api('/api/reports/departments');
+    const audit = await api('/api/reports/audit');
+    const allReports = [blocks, departments, audit];
+    if (!allReports.every(Array.isArray)) {
+        const failed = allReports.find(item => !Array.isArray(item));
+        byId('reportBox').innerHTML = '<p class="error">' + escapeHtml(failed?.message || 'Could not load reports. Check MySQL and the app terminal.') + '</p>';
+        return;
+    }
+
+    let html = '<div class="sub-head">Approved blocks</div>';
+    html += makeTable(blocks,
+        ['schedule_date', 'section_id', 'task_id', 'dept_name', 'priority', 'start_time', 'end_time'],
+        ['Date', 'Railway section', 'Task', 'Department', 'Priority', 'Start', 'End']);
+
+    html += '<div class="sub-head">Work by department</div>';
+    html += makeTable(departments, ['dept_name', 'total_tasks', 'total_minutes'],
+        ['Department', 'Tasks', 'Total minutes']);
+
+    html += '<div class="sub-head">Approval history</div>';
+    html += makeTable(audit, ['log_id', 'block_id', 'action', 'performed_by'],
+        ['#', 'Block', 'Action', 'By']);
+
+    byId('reportBox').innerHTML = html;
+}
+
+
+document.addEventListener('click', async event => {
+    const button = event.target.closest('button');
+    if (!button || button.disabled) return;
+    const taskId = button.dataset.taskId;
+    try {
+        if (button.dataset.deptWorkAction && taskId) {
+            await markTaskCompleted(taskId, button.dataset.deptWorkAction, button);
+        } else if (button.dataset.completionAction && taskId) {
+            await verifyTaskCompletion(taskId, button.dataset.completionAction, button);
+        } else if (button.dataset.requestStatusTask) {
+            await requestDepartmentStatus(button.dataset.requestStatusTask, button);
+        } else if (button.dataset.followUpTask) {
+            await recordControlFollowUp(button.dataset.followUpTask, button);
+        } else if (button.dataset.rescheduleTask) {
+            await requestNewSlot(button.dataset.rescheduleTask, button);
+        }
+    } catch (error) {
+        console.error('SmartBlock button action failed:', error);
+        alert('The action could not be completed. ' + (error?.message || 'Check the application terminal and try again.'));
+    }
+});
