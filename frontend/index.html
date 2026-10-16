@@ -1,51 +1,316 @@
 <!DOCTYPE html>
-<html>
+<html lang="en">
 <head>
-  <title>SmartBlock Login</title>
-  <link rel="stylesheet" href="style.css">
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>SmartBlock</title>
+<link rel="stylesheet" href="css/style.css">
 </head>
 <body>
-  <div class="box login-box">
-    <h1>SmartBlock</h1>
-    <p class="hint">Railway maintenance block planning</p>
 
-    <label>Username</label>
-    <input type="text" id="username">
+<div id="loginScreen" class="login-wrap">
+  <div class="login-card">
+    <div class="login-heading">
+      <div class="logo">SB</div>
+      <div>
+        <h1>SmartBlock</h1>
+        <p class="sub">Railway maintenance planner</p>
+      </div>
+    </div>
 
-    <label>Password</label>
-    <input type="password" id="password">
+    <form id="loginForm" onsubmit="event.preventDefault(); doLogin();">
+      <label for="username">Username</label>
+      <input id="username" placeholder="Enter username" autocomplete="username" required>
+      <label for="password">Password</label>
+      <input id="password" type="password" placeholder="Enter password" autocomplete="current-password" required>
+      <button class="btn-main" type="submit">Log in</button>
+      <p id="loginError" class="error" role="alert"></p>
+    </form>
 
-    <div class="error" id="error"></div>
-    <button onclick="doLogin()">Login</button>
+    <div class="demo-box">
+      <h2>Demo accounts</h2>
+      <p class="note">Enter these details in the login form.</p>
+      <div class="demo-list">
+        <div class="demo-account">
+          <strong>Control Room</strong>
+          <small>Username: control</small>
+          <small>Password: ctrl123</small>
+        </div>
+        <div class="demo-account">
+          <strong>Engineering</strong>
+          <small>Username: eng1</small>
+          <small>Password: eng123</small>
+        </div>
+        <div class="demo-account">
+          <strong>Signal</strong>
+          <small>Username: signal1</small>
+          <small>Password: sig123</small>
+        </div>
+        <div class="demo-account">
+          <strong>Traction</strong>
+          <small>Username: traction1</small>
+          <small>Password: trac123</small>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
 
-    <p class="hint">
-      Demo logins:<br>
-      admin / admin123<br>
-      engineering / eng123<br>
-      signal / sig123<br>
-      traction / trac123
-    </p>
+<div id="app" class="hidden">
+
+  <header class="topbar">
+    <div class="brand">SmartBlock</div>
+    <div class="who">
+      <span id="whoami"></span>
+      <button class="btn-small" onclick="doLogout()">Logout</button>
+    </div>
+  </header>
+
+  <nav class="tabs">
+    <button class="tab active" data-roles="DEPARTMENT,CONTROL" onclick="showTab('dashboard', this)">Dashboard</button>
+    <button class="tab" data-roles="DEPARTMENT" onclick="showTab('request', this)">New Request</button>
+    <button class="tab" data-roles="CONTROL" onclick="showTab('engine', this)">Tools</button>
+    <button class="tab" data-roles="CONTROL" onclick="showTab('plan', this)">Plan</button>
+    <button class="tab" data-roles="DEPARTMENT,CONTROL" onclick="showTab('completion', this)">Work status</button>
+    <button class="tab" data-roles="CONTROL" onclick="showTab('reports', this)">Reports</button>
+  </nav>
+
+  <div id="workStatusAlert" class="work-alert hidden" role="status" aria-live="polite">
+    <div><strong id="workStatusAlertTitle">Work needs attention</strong><p id="workStatusAlertText"></p></div>
+    <button class="btn-small" type="button" onclick="openWorkStatus()">Review work</button>
   </div>
 
-  <script src="script.js"></script>
-  <script>
-    function doLogin() {
-      var u = document.getElementById('username').value.trim().toLowerCase();
-      var p = document.getElementById('password').value;
-      var found = USERS.filter(function (x) { return x.username === u && x.password === p; })[0];
+  <main>
 
-      if (!found) {
-        document.getElementById('error').textContent = 'Wrong username or password';
-        return;
-      }
-      sessionStorage.setItem('user', JSON.stringify(found));
-      window.location = found.role === 'admin' ? 'admin.html' : 'department.html';
-    }
+    <section id="dashboard" class="page">
+      <div id="controlDashboardFilters" class="panel dashboard-filter-panel hidden">
+        <div class="section-heading">
+          <div>
+            <h2>Requests</h2>
+            <p class="note">Choose a date and status.</p>
+          </div>
+          <span class="tag good">Control Room</span>
+        </div>
+        <div class="row dashboard-filters">
+          <div>
+            <label for="dashDate">Start date</label>
+            <input id="dashDate" type="date">
+          </div>
+          <div>
+            <label for="dashRange">Period</label>
+            <select id="dashRange">
+              <option value="day">Selected day</option>
+              <option value="week">Next 7 days</option>
+              <option value="month">This month</option>
+            </select>
+          </div>
+          <div>
+            <label for="dashStatus">Status</label>
+            <select id="dashStatus">
+              <option value="all">All requests</option>
+              <option value="PENDING">Pending approval</option>
+              <option value="APPROVED">Approved</option>
+              <option value="RESCHEDULE_REQUIRED">Needs new time</option>
+              <option value="REJECTED">Rejected</option>
+              <option value="RESCHEDULED">Revised</option>
+              <option value="WITHDRAWN">Withdrawn</option>
+              <option value="CONFLICT">Conflict</option>
+              <option value="CRITICAL">Critical</option>
+            </select>
+          </div>
+        </div>
+        <div class="dashboard-actions">
+          <button class="btn-grey" onclick="setDashboardPeriod('today')">Today</button>
+          <button class="btn-grey" onclick="setDashboardPeriod('week')">Next 7 days</button>
+          <button class="btn-main" onclick="loadDashboard()">Apply filters</button>
+        </div>
+        <p id="dashboardRangeLabel" class="note range-label"></p>
+      </div>
 
-    document.getElementById('password').onkeydown = function (e) {
-      if (e.key === 'Enter') doLogin();
-    };
-  </script>
+      <div id="dashboardCalendarPanel" class="panel dashboard-calendar-panel hidden">
+        <div class="section-heading">
+          <div>
+            <h2>Calendar</h2>
+            <p class="note">Choose a day to see its requests and conflicts.</p>
+          </div>
+          <span id="calendarMonthLabel" class="tag good"></span>
+        </div>
+        <div class="calendar-weekdays"><span>Sun</span><span>Mon</span><span>Tue</span><span>Wed</span><span>Thu</span><span>Fri</span><span>Sat</span></div>
+        <div id="dashboardCalendar" class="calendar-grid"></div>
+      </div>
+
+      <div class="cards">
+        <div class="card blue">   <div class="num" id="cRequests">-</div><div class="lbl">Requests</div></div>
+        <div class="card green">  <div class="num" id="cApproved">-</div><div class="lbl">Approved</div></div>
+        <div class="card orange" id="conflictCard"> <div class="num" id="cConflicts">-</div><div class="lbl" id="cConflictsLabel">Conflicts</div></div>
+        <div class="card amber" id="pendingCard"> <div class="num" id="cPending">-</div><div class="lbl">Pending approval</div></div>
+        <div class="card orange">  <div class="num" id="cReschedule">-</div><div class="lbl">Needs new time</div></div>
+        <div class="card red">     <div class="num" id="cRejected">-</div><div class="lbl">Rejected</div></div>
+        <div class="card red">     <div class="num" id="cCritical">-</div><div class="lbl">Critical</div></div>
+      </div>
+
+
+      <div class="panel">
+        <h2 id="dashTitle">Requests</h2>
+        <p id="dashboardTableNote" class="note"></p>
+        <div id="taskTable"></div>
+      </div>
+    </section>
+
+    <section id="completion" class="page hidden">
+      <div id="completionStatusPanel" class="panel hidden">
+        <div class="section-heading">
+          <div>
+            <h2>Work status</h2>
+            <p class="note">If the approved time ends with no update, it appears here automatically.</p>
+          </div>
+          <button class="btn-grey" onclick="loadCompletionPanel()">Refresh</button>
+        </div>
+        <div id="completionSummary" class="cards"></div>
+        <div id="completionTable"></div>
+      </div>
+      <div id="departmentCompletionPanel" class="panel hidden">
+        <div class="section-heading">
+          <div>
+            <h2>My work</h2>
+            <p class="note">After the job, report completed or not completed.</p>
+          </div>
+          <button class="btn-grey" onclick="loadDepartmentCompletion()">Refresh</button>
+        </div>
+        <div id="departmentCompletionTable"></div>
+      </div>
+    </section>
+
+    <section id="request" class="page hidden">
+      <div class="panel narrow">
+        <h2>New request</h2>
+
+        <input id="fRevisesTaskId" type="hidden" value="">
+        <div id="revisionNotice" class="note hidden" role="status"></div>
+
+        <label>Maintenance date</label>
+        <input id="fDate" type="date" required>
+
+        <label for="fSection">Track section</label>
+        <select id="fSection" required>
+          <option value="" selected disabled>Choose a section</option>
+          <option value="S1">S1 — North Track</option>
+          <option value="S2">S2 — Central Track</option>
+          <option value="S3">S3 — South Track</option>
+        </select>
+
+        <label for="fWork">Work description</label>
+        <textarea id="fWork" rows="3" placeholder="Describe the maintenance work" required minlength="3" maxlength="100"></textarea>
+
+        <label>Priority</label>
+        <select id="fPriority">
+          <option>Critical</option><option>High</option>
+          <option selected>Medium</option><option>Low</option>
+        </select>
+
+        <label>Duration (minutes)</label>
+        <input id="fDuration" type="number" value="60" min="15" max="720" step="15">
+
+        <div class="row">
+          <div>
+            <label>Start time</label>
+            <input id="fStart" type="time" value="10:00" required>
+          </div>
+          <div>
+            <label>End time</label>
+            <input id="fEnd" type="time" value="11:00" required>
+          </div>
+        </div>
+
+        <button id="submitRequestButton" type="button" class="btn-main" onclick="submitTask()">Send request</button>
+        <p id="requestMsg" class="ok-msg"></p>
+      </div>
+    </section>
+
+    <section id="engine" class="page hidden">
+
+      <div class="panel">
+        <h2>Check conflicts</h2>
+        <p class="note">Find requests that overlap.</p>
+        <label>Planning date</label>
+        <input id="engineDate" type="date" onchange="syncPlannerDate('engineDate')">
+        <button class="btn-main" onclick="loadConflicts()">Check</button>
+        <div id="conflictBox"></div>
+      </div>
+
+      <div class="panel">
+        <h2>Compare schedules</h2>
+        <p class="note">See how different scheduling methods compare.</p>
+        <button class="btn-main" onclick="loadScheduling()">Compare</button>
+        <div id="schedBox"></div>
+      </div>
+
+      <div class="panel">
+        <h2>Resource allocation</h2>
+        <p class="note">See how jobs are assigned to resources.</p>
+        <button class="btn-main" onclick="loadAllocation()">Check allocation</button>
+        <div id="allocBox"></div>
+      </div>
+
+</section>
+
+    <section id="plan" class="page hidden">
+      <div class="panel">
+        <h2>Create block plan</h2>
+        <p class="note">Check the plan before saving it.</p>
+        <label>Planning date</label>
+        <input id="planDate" type="date" onchange="syncPlannerDate('planDate')">
+
+        <button class="btn-main" onclick="loadPlan()">Preview plan</button>
+        <button class="btn-ok" onclick="approvePlan()">Approve and save</button>
+
+        <div id="planBox"></div>
+        <div id="approveBox"></div>
+      </div>
+
+      <div class="panel">
+        <div class="section-heading">
+          <div>
+            <h2>Saved plans</h2>
+            
+          </div>
+        </div>
+        <div class="row planner-filters">
+          <div>
+            <label for="savedPlanDate">Start date</label>
+            <input id="savedPlanDate" type="date">
+          </div>
+          <div>
+            <label for="savedPlanRange">Period</label>
+            <select id="savedPlanRange">
+              <option value="day">Selected day</option>
+              <option value="week">Next 7 days</option>
+              <option value="month">This month</option>
+            </select>
+          </div>
+          <div class="filter-action">
+            <label>&nbsp;</label>
+            <button class="btn-main" onclick="loadSavedPlans()">Search</button>
+          </div>
+        </div>
+        <div id="savedPlanSummary" class="saved-summary"></div>
+        <div id="savedPlanBox"></div>
+      </div>
+    </section>
+
+    <section id="reports" class="page hidden">
+      <div class="panel">
+        <h2>Reports</h2>
+        
+        <button class="btn-main" onclick="loadReports()">Refresh</button>
+        <div id="reportBox"></div>
+      </div>
+    </section>
+
+  </main>
+</div>
+
+<script src="js/app.js?v=20261016-no-prompt"></script>
 </body>
 </html>
 
