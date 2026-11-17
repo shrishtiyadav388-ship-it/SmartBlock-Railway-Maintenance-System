@@ -1,0 +1,240 @@
+package com.smartblock.service;
+
+import com.smartblock.model.Slot;
+import com.smartblock.os.BankersSafetyChecker;
+import org.springframework.jdbc.core.JdbcTemplate;
+import org.springframework.stereotype.Service;
+
+import java.sql.Date;
+import java.time.LocalDate;
+import java.util.*;
+
+@Service
+public class BankersResourceSafetyService {
+    private final JdbcTemplate jdbc;
+
+    public BankersResourceSafetyService(JdbcTemplate jdbc) {
+        this.jdbc = jdbc;
+    }
+
+    public List<Map<String, Object>> assessPlan(LocalDate date, List<Slot> slots) {
+        List<Reservation> virtualReservations = new ArrayList<>();
+        Map<String, Map<String, Object>> byTask = new HashMap<>();
+
+        List<Slot> ordered = new ArrayList<>(slots);
+        ordered.sort(Comparator.comparing((Slot s) -> s.scheduled ? s.start : "99:99")
+                .thenComparing(s -> s.sectionId).thenComparing(s -> s.taskId));
+
+        for (Slot slot : ordered) {
+            Map<String, Object> result;
+            if (!slot.scheduled) {
+                result = result(slot.taskId, false, 0, 0, 1, 0, List.of(),
+                        "No time slot was found, so resources cannot be reserved.");
+            } else {
+                result = checkSlot(date, slot.taskId, slot.sectionId, slot.start, slot.end,
+                        virtualReservations);
+                if (Boolean.TRUE.equals(result.get("safe"))) {
+                    Claim claim = loadClaim(slot.taskId);
+                    virtualReservations.add(new Reservation(slot.taskId, slot.sectionId, slot.start,
+                            slot.end, claim.requiredWorkers, claim.skill));
+                }
+            }
+            byTask.put(slot.taskId, result);
+        }
+
+        List<Map<String, Object>> results = new ArrayList<>();
+        for (Slot slot : slots)
+            results.add(byTask.get(slot.taskId));
+        return results;
+    }
+
+    public Map<String, Object> checkSlot(LocalDate date, String taskId, String sectionId,
+            String start, String end) {
+        return checkSlot(date, taskId, sectionId, start, end, List.of());
+    }
+
+    private Map<String, Object> checkSlot(LocalDate date, String taskId, String sectionId,
+            String start, String end,
+            List<Reservation> virtualReservations) {
+        Claim claim;
+        try {
+            claim = loadClaim(taskId);
+        } catch (RuntimeException ex) {
+            return result(taskId, false, 0, 0, 1, 0, List.of(),
+                    "The job's worker requirement could not be loaded. Check the database setup.");
+        }
+
+        int totalSections = value("SELECT COUNT(*) FROM section");
+        int qualifiedWorkers = jdbc.queryForObject(
+                "SELECT COUNT(*) FROM worker_resource WHERE active = TRUE AND skill = ?",
+                Integer.class, claim.skill);
+
+        List<Reservation> committed = jdbc.query("""
+                SELECT b.task_id, b.section_id, b.start_time, b.end_time,
+                       t.required_workers,
+                       CASE d.dept_name
+                         WHEN 'Engineering' THEN 'Track maintenance'
+                         WHEN 'Signal' THEN 'Signal maintenance'
+                         WHEN 'Traction' THEN 'Electrical maintenance'
+                         ELSE 'General maintenance'
+                       END AS worker_skill
+                FROM block_schedule b
+                JOIN maintenance_task t ON t.task_id = b.task_id
+                JOIN department d ON d.dept_id = t.dept_id
+                WHERE b.schedule_date = ? AND b.start_time < ? AND b.end_time > ?
+                """, (rs, rowNum) -> new Reservation(
+                rs.getString("task_id"), rs.getString("section_id"),
+                rs.getString("start_time"), rs.getString("end_time"),
+                rs.getInt("required_workers"), rs.getString("worker_skill")),
+                Date.valueOf(date), end, start);
+
+        List<Reservation> overlapping = new ArrayList<>(committed);
+        for (Reservation reservation : virtualReservations) {
+            if (overlaps(start, end, reservation.start, reservation.end))
+                overlapping.add(reservation);
+        }
+
+        boolean sameSectionBusy = overlapping.stream()
+                .anyMatch(r -> sectionId.equalsIgnoreCase(r.sectionId));
+        Set<String> occupiedSections = new HashSet<>();
+        for (Reservation reservation : overlapping)
+            occupiedSections.add(reservation.sectionId);
+        int availableSections = Math.max(0, totalSections - occupiedSections.size());
+
+        // Use actual assigned worker IDs for committed blocks, not just each job's
+        // requested count.
+        // Old blocks without assignment rows are conservatively counted by their worker
+        // claim.
+        Integer assignedBusy = jdbc.queryForObject("""
+                SELECT COUNT(DISTINCT a.worker_id)
+                FROM block_worker_assignment a
+                JOIN block_schedule b ON b.block_id = a.block_id
+                JOIN worker_resource w ON w.worker_id = a.worker_id
+                WHERE b.schedule_date = ? AND b.start_time < ? AND b.end_time > ?
+                  AND w.skill = ? AND w.active = TRUE
+                """, Integer.class, Date.valueOf(date), end, start, claim.skill);
+        Integer legacyBusy = jdbc.queryForObject("""
+                SELECT COALESCE(SUM(t.required_workers), 0)
+                FROM block_schedule b
+                JOIN maintenance_task t ON t.task_id = b.task_id
+                JOIN department d ON d.dept_id = t.dept_id
+                WHERE b.schedule_date = ? AND b.start_time < ? AND b.end_time > ?
+                  AND CASE d.dept_name
+                        WHEN 'Engineering' THEN 'Track maintenance'
+                        WHEN 'Signal' THEN 'Signal maintenance'
+                        WHEN 'Traction' THEN 'Electrical maintenance'
+                        ELSE 'General maintenance'
+                      END = ?
+                  AND NOT EXISTS (SELECT 1 FROM block_worker_assignment a WHERE a.block_id = b.block_id)
+                """, Integer.class, Date.valueOf(date), end, start, claim.skill);
+        int virtualWorkersInUse = virtualReservations.stream()
+                .filter(r -> overlaps(start, end, r.start, r.end) && claim.skill.equals(r.skill))
+                .mapToInt(r -> r.requiredWorkers).sum();
+        int workersInUse = (assignedBusy == null ? 0 : assignedBusy)
+                + (legacyBusy == null ? 0 : legacyBusy) + virtualWorkersInUse;
+        int availableWorkers = Math.max(0, qualifiedWorkers - workersInUse);
+
+        if (sameSectionBusy) {
+            return result(taskId, false, availableSections, availableWorkers, 1,
+                    claim.requiredWorkers, List.of(),
+                    "Unsafe for this time slot: section " + sectionId
+                            + " is already booked. Choose another time.");
+        }
+
+        BankersSafetyChecker.Result safety = BankersSafetyChecker.checkRequest(
+                taskId, new int[] { availableSections, availableWorkers },
+                new int[] { 0, 0 }, new int[] { 1, claim.requiredWorkers });
+
+        String reason;
+        if (safety.safe) {
+            reason = "Safe: one section slot and " + claim.requiredWorkers
+                    + " qualified team(s) are available for this time window.";
+        } else if (availableWorkers < claim.requiredWorkers) {
+            reason = "Unsafe resource state: this job needs " + claim.requiredWorkers
+                    + " qualified team(s), but only " + availableWorkers
+                    + " remain available in this time window. Try another time.";
+        } else {
+            reason = "Unsafe resource state: no section slot is available in this time window.";
+        }
+
+        return result(taskId, safety.safe, availableSections, availableWorkers, 1,
+                claim.requiredWorkers, safety.safeSequence, reason);
+    }
+
+    private Claim loadClaim(String taskId) {
+        List<Claim> claims = jdbc.query("""
+                SELECT t.required_workers,
+                       CASE d.dept_name
+                         WHEN 'Engineering' THEN 'Track maintenance'
+                         WHEN 'Signal' THEN 'Signal maintenance'
+                         WHEN 'Traction' THEN 'Electrical maintenance'
+                         ELSE 'General maintenance'
+                       END AS worker_skill
+                FROM maintenance_task t
+                JOIN department d ON d.dept_id = t.dept_id
+                WHERE t.task_id = ?
+                """, (rs, rowNum) -> new Claim(rs.getInt("required_workers"),
+                rs.getString("worker_skill")), taskId);
+        if (claims.isEmpty())
+            throw new IllegalArgumentException("Unknown task " + taskId);
+        return claims.get(0);
+    }
+
+    private int value(String sql) {
+        Integer value = jdbc.queryForObject(sql, Integer.class);
+        return value == null ? 0 : value;
+    }
+
+    private boolean overlaps(String aStart, String aEnd, String bStart, String bEnd) {
+        return aStart.compareTo(bEnd) < 0 && aEnd.compareTo(bStart) > 0;
+    }
+
+    private Map<String, Object> result(String taskId, boolean safe, int availableSections,
+            int availableWorkers, int neededSections, int neededWorkers,
+            List<String> sequence, String reason) {
+        Map<String, Object> result = new LinkedHashMap<>();
+        result.put("taskId", taskId);
+        result.put("safe", safe);
+        result.put("availableSections", availableSections);
+        result.put("availableWorkers", availableWorkers);
+        result.put("maxVector", "[" + neededSections + ", " + neededWorkers + "]");
+        result.put("allocationVector", "[0, 0]");
+        result.put("needVector", "[" + neededSections + ", " + neededWorkers + "]");
+        result.put("availableVector", "[" + availableSections + ", " + availableWorkers + "]");
+        result.put("neededSections", neededSections);
+        result.put("neededWorkers", neededWorkers);
+        result.put("safeSequence", sequence);
+        result.put("safeSequenceText", sequence.isEmpty() ? "No safe sequence" : String.join(" → ", sequence));
+        result.put("reason", reason);
+        return result;
+    }
+
+    private static final class Claim {
+        final int requiredWorkers;
+        final String skill;
+
+        Claim(int requiredWorkers, String skill) {
+            this.requiredWorkers = requiredWorkers;
+            this.skill = skill;
+        }
+    }
+
+    private static final class Reservation {
+        final String taskId;
+        final String sectionId;
+        final String start;
+        final String end;
+        final int requiredWorkers;
+        final String skill;
+
+        Reservation(String taskId, String sectionId, String start, String end,
+                int requiredWorkers, String skill) {
+            this.taskId = taskId;
+            this.sectionId = sectionId;
+            this.start = start;
+            this.end = end;
+            this.requiredWorkers = requiredWorkers;
+            this.skill = skill;
+        }
+    }
+}
