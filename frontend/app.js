@@ -4,7 +4,7 @@ function byId(id) {
 
 async function api(url, method, body) {
     const controller = new AbortController();
-    const timeout = window.setTimeout(() => controller.abort(), 15000);
+    const timeout = window.setTimeout(() => controller.abort(), url.startsWith('/api/chatbot/') ? 45000 : 15000);
     const options = {
         method: method || 'GET',
         headers: { 'Content-Type': 'application/json' },
@@ -38,6 +38,7 @@ async function api(url, method, body) {
     }
 }
 
+// Use an in-page dialog because some browsers disable native text prompts.
 function askForText(message, defaultValue = '') {
     return new Promise(resolve => {
         const backdrop = document.createElement('div');
@@ -92,6 +93,7 @@ function askForText(message, defaultValue = '') {
 let currentRole = null;
 let currentDept = null;
 let myRequestCache = [];
+let chatHistory = [];
 
 async function doLogin() {
     const username = byId('username').value.trim();
@@ -168,7 +170,7 @@ function setDefaultDates() {
     const nextDate = new Date();
     nextDate.setDate(nextDate.getDate() + 1);
     const tomorrow = isoDate(nextDate);
-    ['fDate', 'engineDate', 'planDate', 'savedPlanDate', 'dashDate'].forEach(id => {
+    ['fDate', 'engineDate', 'planDate', 'savedPlanDate', 'dashDate', 'timelineDate'].forEach(id => {
         const input = byId(id);
         if (input && !input.value) input.value = tomorrow;
     });
@@ -214,6 +216,60 @@ function showTab(name, button) {
     if (name === 'completion') loadCompletionTab();
     if (name === 'reports') loadReports();
     if (name === 'plan') loadSavedPlans();
+    if (name === 'timeline') loadTimeline();
+}
+
+function addChatBubble(role, text) {
+    const box = byId('chatMessages');
+    const bubble = document.createElement('div');
+    bubble.className = 'chat-bubble ' + (role === 'user' ? 'user-bubble' : 'assistant-bubble');
+    bubble.textContent = text;
+    box.appendChild(bubble);
+    box.scrollTop = box.scrollHeight;
+    return bubble;
+}
+
+async function sendChatMessage(prefill) {
+    const input = byId('chatInput');
+    const message = String(prefill ?? input.value).trim();
+    if (!message || byId('chatSendButton').disabled) return;
+
+    input.value = '';
+    addChatBubble('user', message);
+    byId('chatSendButton').disabled = true;
+    byId('chatStatus').textContent = 'Thinking...';
+
+    const result = await api('/api/chatbot/message', 'POST', {
+        message,
+        history: chatHistory.slice(-8)
+    });
+
+    if (result.ok && result.reply) {
+        chatHistory.push({ role: 'user', content: message });
+        chatHistory.push({ role: 'assistant', content: result.reply });
+        chatHistory = chatHistory.slice(-8);
+        addChatBubble('assistant', result.reply);
+        byId('chatStatus').textContent = result.mode === 'local'
+            ? 'Offline assistant · no API key needed'
+            : 'AI can make mistakes. Follow official railway procedures.';
+    } else {
+        addChatBubble('assistant', result.message || 'Could not get a reply. Please try again.');
+        byId('chatStatus').textContent = 'Try again or ask a SmartBlock topic.';
+    }
+    byId('chatSendButton').disabled = false;
+    input.focus();
+}
+
+function askChatSuggestion(question) {
+    if (!byId('chatSendButton').disabled) sendChatMessage(question);
+}
+
+function clearChat() {
+    chatHistory = [];
+    byId('chatMessages').replaceChildren();
+    addChatBubble('assistant', 'New chat started. What would you like to know?');
+    byId('chatStatus').textContent = 'Offline assistant · no API key needed';
+    byId('chatInput').focus();
 }
 
 function escapeHtml(value) {
@@ -517,7 +573,7 @@ function makeControlRequestTable(rows) {
             + '<p>Try another date or choose All requests.</p></div>';
     }
     let html = '<table><thead><tr><th>Task</th><th>Work date</th><th>Requested window</th><th>Department / section</th>'
-        + '<th>Work / priority</th><th>Approved slot</th><th>Request status</th><th>Actions</th></tr></thead><tbody>';
+        + '<th>Work / priority</th><th>Workers needed</th><th>Approved slot</th><th>Request status</th><th>Actions</th></tr></thead><tbody>';
     rows.forEach(r => {
         const status = String(r.status || 'PENDING').toUpperCase();
         const conflict = isTrueFlag(r.hasConflict);
@@ -536,6 +592,7 @@ function makeControlRequestTable(rows) {
             + '<td>' + escapeHtml((r.requestedStart || '-') + ' – ' + (r.requestedEnd || '-')) + '</td>'
             + '<td>' + escapeHtml(r.department || '-') + '<div class="note">' + escapeHtml((r.sectionName || r.sectionId || '-') + (r.sectionId ? ' (' + r.sectionId + ')' : '')) + '</div></td>'
             + '<td>' + escapeHtml(r.workDesc || '-') + '<div class="note">Priority: ' + escapeHtml(r.priority || '-') + '</div></td>'
+            + '<td>' + escapeHtml(r.requiredWorkers || 1) + ' team(s)<div class="note">Preferred: ' + escapeHtml((r.requested_team || 'ANY') === 'ANY' ? 'Any available' : 'Team ' + r.requested_team) + '</div></td>'
             + '<td>' + approvedSlot + '</td>'
             + '<td><span class="tag ' + statusTagClass(status) + '">' + escapeHtml(requestStatusLabel(status)) + '</span>'
             + (conflict ? '<div><span class="tag bad">Conflict</span></div>' : '') + reason + '</td>'
@@ -598,7 +655,7 @@ async function loadMyRequests() {
     byId('dashTitle').textContent = 'My requests';
     byId('dashboardTableNote').textContent = 'Check decisions here. Use Work status to report finished or delayed work.';
 
-    let html = '<table><tr><th>Task</th><th>Date / work</th><th>Section</th><th>Priority</th><th>Request status</th><th>Approved time</th><th>Control note</th><th>Action</th></tr>';
+    let html = '<table><tr><th>Task</th><th>Date / work</th><th>Section</th><th>Workers</th><th>Priority</th><th>Request status</th><th>Approved time</th><th>Control note</th><th>Action</th></tr>';
     rows.forEach(r => {
         const status = String(r.status || 'PENDING').toUpperCase();
         const when = r.start_time ? (r.start_time + ' - ' + r.end_time) : '-';
@@ -610,7 +667,7 @@ async function loadMyRequests() {
         html += '<tr><td>' + escapeHtml(r.task_id)
               + (r.supersedes_task_id ? '<div class="note">Revises ' + escapeHtml(r.supersedes_task_id) + '</div>' : '')
               + '</td><td>' + escapeHtml(displayDate(r.work_date)) + '<div class="note">' + escapeHtml(r.work_desc) + '</div></td><td>' + escapeHtml(sectionLabel(r.section_id))
-              + '</td><td class="p-' + priorityClass + '">' + escapeHtml(r.priority) + '</td><td><span class="tag ' + statusTagClass(status) + '">' + escapeHtml(requestStatusLabel(status)) + '</span></td>'
+              + '</td><td>' + escapeHtml(r.required_workers || 1) + ' team(s)<div class="note">Preferred: ' + escapeHtml((r.requestedTeam || 'ANY') === 'ANY' ? 'Any available' : 'Team ' + r.requestedTeam) + '</div></td><td class="p-' + priorityClass + '">' + escapeHtml(r.priority) + '</td><td><span class="tag ' + statusTagClass(status) + '">' + escapeHtml(requestStatusLabel(status)) + '</span></td>'
               + '<td>' + escapeHtml(when) + '</td><td>' + escapeHtml(r.decision_reason || 'No decision recorded yet') + '</td><td>' + action + '</td></tr>';
     });
     byId('taskTable').innerHTML = rows.length ? html + '</table>' : '<div class="empty-state"><strong>No requests yet</strong><p>Select New Request to add maintenance work.</p></div>';
@@ -625,6 +682,8 @@ async function prepareRevision(taskId) {
     const today = localToday();
     byId('fDate').value = previous.work_date < today ? today : previous.work_date;
     byId('fSection').value = previous.section_id;
+    if (byId('fRequiredWorkers')) byId('fRequiredWorkers').value = String(previous.required_workers || 1);
+    if (byId('fRequestedTeam')) byId('fRequestedTeam').value = String(previous.requested_team || 'ANY').toUpperCase();
     byId('fWork').value = previous.work_desc || '';
     byId('fPriority').value = previous.priority || 'Medium';
     byId('fDuration').value = previous.duration_min || 60;
@@ -648,6 +707,8 @@ async function submitTask() {
         workDesc: byId('fWork').value.trim(),
         priority: byId('fPriority').value,
         durationMin: byId('fDuration').value,
+        requiredWorkers: byId('fRequiredWorkers').value,
+        requestedTeam: byId('fRequestedTeam').value,
         requestedStart: byId('fStart').value,
         requestedEnd: byId('fEnd').value,
         revisesTaskId: byId('fRevisesTaskId').value
@@ -662,7 +723,8 @@ async function submitTask() {
         byId('requestMsg').textContent = 'Choose S1, S2 or S3, then check the date, work description, duration and time window.';
         return;
     }
-const oldText = button ? button.textContent : '';
+
+    const oldText = button ? button.textContent : '';
     if (button) { button.disabled = true; button.textContent = 'Sending...'; button.setAttribute('aria-busy', 'true'); }
     byId('requestMsg').textContent = 'Saving request...';
     try {
@@ -673,6 +735,8 @@ const oldText = button ? button.textContent : '';
         if (result.ok) {
             byId('fWork').value = '';
             byId('fSection').value = '';
+            byId('fRequiredWorkers').value = '1';
+            byId('fRequestedTeam').value = 'ANY';
             byId('fRevisesTaskId').value = '';
             byId('revisionNotice').textContent = '';
             byId('revisionNotice').classList.add('hidden');
@@ -841,6 +905,7 @@ async function requestNewSlot(taskId, button) {
 async function markTaskCompleted(taskId, action, button) {
     if (button && button.disabled) return;
 
+    // Ask for the report before showing the button as busy.
     const completed = action === 'COMPLETED';
     const note = await askForText(completed
         ? 'What work was done? (5–500 characters)'
@@ -884,7 +949,7 @@ async function requestDepartmentStatus(taskId, button) {
         alert('Enter a message between 5 and 500 characters.');
         return;
     }
-const originalText = button ? button.textContent : '';
+    const originalText = button ? button.textContent : '';
     if (button) { button.disabled = true; button.textContent = 'Sending...'; button.setAttribute('aria-busy', 'true'); }
     try {
         const result = await api('/api/control/tasks/' + encodeURIComponent(taskId) + '/request-status', 'POST', { note: note.trim() });
@@ -998,29 +1063,58 @@ async function loadScheduling() {
 async function loadAllocation() {
     const rows = await api('/api/allocation?date=' + encodeURIComponent(getPlanningDate()));
     if (!Array.isArray(rows)) {
-        byId('allocBox').innerHTML = '<p class="error">' + escapeHtml(rows?.message || 'Could not check resource allocation. Check the app and database.') + '</p>';
+        byId('allocBox').innerHTML = '<p class="error">' + escapeHtml(rows?.message || 'Could not check teams. Please try again.') + '</p>';
         return;
     }
     byId('allocBox').innerHTML = makeTable(
-        rows, ['taskId', 'sectionId', 'status', 'start', 'end'], ['Task', 'Section', 'Result', 'Start', 'End']);
+        rows, ['taskId', 'sectionId', 'status', 'start', 'end'], ['Task', 'Section', 'Status', 'Start', 'End']);
 }
 
 async function loadPlan() {
     const date = getPlanningDate();
     const data = await api('/api/plan?date=' + encodeURIComponent(date));
     if (!data || !Array.isArray(data.plan)) {
-        byId('planBox').innerHTML = '<p class="error">' + escapeHtml(data?.message || 'Could not build the plan. Check the app and database.') + '</p>';
+        byId('planBox').innerHTML = '<p class="error">' + escapeHtml(data?.message || 'Could not build the plan. Please try again.') + '</p>';
         return;
     }
 
-    let html = makeTable(data.plan,
-        ['sectionId', 'taskId', 'department', 'priority', 'scheduleStatus', 'effectiveRank', 'start', 'end', 'waitingMin', 'reason'],
-        ['Section', 'Task', 'Department', 'Priority', 'Status', 'Effective rank', 'Start', 'End', 'Wait (min)', 'Why this slot']);
+    const plan = data.plan;
+    const safetyByTask = new Map((data.resourceSafety || []).map(item => [String(item.taskId), item]));
+    const scheduled = plan.filter(item => item.scheduleStatus === 'Scheduled' || item.scheduled === true).length;
+    const unscheduled = plan.length - scheduled;
+    let html = '<p class="note"><strong>Plan date:</strong> ' + displayDate(date) + '</p>';
+    html += '<div class="saved-summary plan-summary">'
+        + '<div class="mini-stat"><strong>' + plan.length + '</strong><span>Requests</span></div>'
+        + '<div class="mini-stat"><strong>' + scheduled + '</strong><span>Time found</span></div>'
+        + '<div class="mini-stat"><strong>' + unscheduled + '</strong><span>Need new time</span></div>'
+        + '</div>';
 
-    html = '<p class="note"><b>Plan date:</b> ' + displayDate(date) + '</p>' + html;
-    html += '<p class="ok-msg">' + escapeHtml(data.verification) + '</p>';
-    html += '<p class="note">' + (data.note || '') + '</p>';
-    html += '<p class="note">The scheduler suggests times. MySQL checks for conflicts before approval.</p>';
+    if (!plan.length) {
+        html += '<div class="empty-state"><strong>No requests for this date</strong><p>Choose another date or wait for a department request.</p></div>';
+    } else {
+        html += '<div class="sub-head">Proposed schedule</div><table class="plan-table"><thead><tr><th>Task / work</th><th>Department</th><th>Section</th><th>Priority</th><th>Planned time</th><th>Status</th><th>Team check</th><th>Next step</th></tr></thead><tbody>';
+        plan.forEach(item => {
+            const safety = safetyByTask.get(String(item.taskId));
+            const isScheduled = item.scheduleStatus === 'Scheduled' || item.scheduled === true;
+            const safe = Boolean(safety && safety.safe);
+            const status = isScheduled ? 'Time found' : 'No suitable time';
+            const teamCheck = !isScheduled ? 'Not checked' : ((safety?.availableWorkers ?? 0) + ' available / ' + (safety?.neededWorkers ?? 0) + ' needed');
+            const nextStep = isScheduled && safe ? 'Ready to approve' : 'Review request';
+            html += '<tr><td><strong>' + escapeHtml(item.taskId) + '</strong><div class="decision-reason">' + escapeHtml(item.workDesc || 'Maintenance work') + '</div></td>'
+                + '<td>' + escapeHtml(item.department) + '</td>'
+                + '<td>' + escapeHtml(item.sectionId) + '</td>'
+                + '<td class="p-' + escapeHtml(['Critical','High','Medium','Low'].includes(String(item.priority)) ? item.priority : 'Low') + '">' + escapeHtml(item.priority) + '</td>'
+                + '<td>' + escapeHtml(isScheduled ? (item.start + '–' + item.end) : '—') + '</td>'
+                + '<td><span class="tag ' + (isScheduled ? 'good' : 'pending') + '">' + escapeHtml(status) + '</span></td>'
+                + '<td><span class="tag ' + (safe ? 'good' : 'pending') + '">' + escapeHtml(isScheduled ? (safe ? 'Available' : 'Unavailable') : teamCheck) + '</span>'
+                + (isScheduled ? '<div class="decision-reason">' + escapeHtml(teamCheck) + '</div>' : '')
+                + (safety && !safe && safety.reason ? '<div class="decision-reason">' + escapeHtml(safety.reason) + '</div>' : '') + '</td>'
+                + '<td>' + escapeHtml(nextStep) + '</td></tr>';
+        });
+        html += '</tbody></table>';
+    }
+    html += '<p class="ok-msg">' + escapeHtml(data.verification || 'Schedule checked.') + '</p>';
+    html += '<p class="note">Team names are confirmed after approval and shown under Approved plans.</p>';
     byId('planBox').innerHTML = html;
 }
 
@@ -1028,15 +1122,26 @@ async function approvePlan() {
     const date = getPlanningDate();
     const data = await api('/api/plan/approve?date=' + encodeURIComponent(date), 'POST');
     if (!data || !Array.isArray(data.saved) || !Array.isArray(data.failed)) {
-        byId('approveBox').innerHTML = '<p class="error">' + escapeHtml(data?.message || 'Could not save the plan. Check the app and database.') + '</p>';
+        byId('approveBox').innerHTML = '<p class="error">' + escapeHtml(data?.message || 'Could not save the plan. Please try again.') + '</p>';
         return;
     }
 
-    let html = '<div class="sub-head">Approval result for ' + escapeHtml(data.date || date) + '</div>';
-    data.saved.forEach(line => html += '<p class="note">Saved: ' + escapeHtml(line) + '</p>');
-    data.failed.forEach(line => html += '<p class="note">Not saved: ' + escapeHtml(line) + '</p>');
-
+    let html = '<div class="sub-head">Approval result — ' + displayDate(data.date || date) + '</div>';
+    html += '<div class="saved-summary">'
+        + '<div class="mini-stat"><strong>' + data.saved.length + '</strong><span>Approved</span></div>'
+        + '<div class="mini-stat"><strong>' + data.failed.length + '</strong><span>Not approved</span></div></div>';
+    if (data.saved.length) {
+        html += '<div class="sub-head">Approved blocks and assigned teams</div><ul class="result-list">';
+        data.saved.forEach(line => html += '<li>' + escapeHtml(line) + '</li>');
+        html += '</ul>';
+    }
+    if (data.failed.length) {
+        html += '<div class="sub-head">Needs review</div><ul class="result-list">';
+        data.failed.forEach(line => html += '<li>' + escapeHtml(line) + '</li>');
+        html += '</ul>';
+    }
     byId('approveBox').innerHTML = html;
+    loadSavedPlans();
     loadDashboard();
 }
 
@@ -1072,8 +1177,8 @@ async function loadSavedPlans() {
         return;
     }
     box.innerHTML = makeTable(blocks,
-        ['block_id', 'schedule_date', 'start_time', 'end_time', 'section_id', 'task_id', 'work_desc', 'dept_name', 'priority', 'approved_by'],
-        ['Block', 'Date', 'Start', 'End', 'Section', 'Task', 'Work', 'Department', 'Priority', 'Approved by']);
+        ['schedule_date', 'start_time', 'end_time', 'section_id', 'task_id', 'work_desc', 'dept_name', 'priority', 'assigned_workers'],
+        ['Date', 'Start', 'End', 'Section', 'Task', 'Work', 'Department', 'Priority', 'Assigned team']);
 }
 
 async function loadReports() {
@@ -1089,8 +1194,8 @@ async function loadReports() {
 
     let html = '<div class="sub-head">Approved blocks</div>';
     html += makeTable(blocks,
-        ['schedule_date', 'section_id', 'task_id', 'dept_name', 'priority', 'start_time', 'end_time'],
-        ['Date', 'Railway section', 'Task', 'Department', 'Priority', 'Start', 'End']);
+        ['schedule_date', 'section_id', 'task_id', 'dept_name', 'priority', 'start_time', 'end_time', 'assigned_workers'],
+        ['Date', 'Section', 'Task', 'Department', 'Priority', 'Start', 'End', 'Assigned team']);
 
     html += '<div class="sub-head">Work by department</div>';
     html += makeTable(departments, ['dept_name', 'total_tasks', 'total_minutes'],
@@ -1104,6 +1209,7 @@ async function loadReports() {
 }
 
 
+// Keep dynamic work-status buttons connected after each table refresh.
 document.addEventListener('click', async event => {
     const button = event.target.closest('button');
     if (!button || button.disabled) return;
@@ -1125,3 +1231,298 @@ document.addEventListener('click', async event => {
         alert('The action could not be completed. ' + (error?.message || 'Check the application terminal and try again.'));
     }
 });
+
+
+/* Check actual pending department requests, using their submitted section/time and worker needs. */
+async function checkRealDepartmentRequests() {
+    const box = byId('workerDeadlockResult');
+    if (!box) return;
+    const dateInput = byId('planDate');
+    const date = dateInput?.value || new Date().toISOString().slice(0, 10);
+    box.textContent = 'Checking real pending department requests for ' + date + '…';
+    const result = await api('/api/control/deadlock/requests?date=' + encodeURIComponent(date), 'GET');
+    if (!result || result.ok === false || !Array.isArray(result.requests)) {
+        box.textContent = result?.message || 'Could not check pending requests. Check MySQL and the application terminal.';
+        return;
+    }
+    const lines = [
+        '<p><strong>Work date:</strong> ' + escapeHtml(result.date || date) + '</p>',
+        '<p><strong>Real pending requests checked:</strong> ' + Number(result.requestsChecked || 0) +
+            ' &nbsp; <strong>Unsafe resource claims:</strong> ' + Number(result.unsafeRequests || 0) + '</p>',
+        '<p><strong>Result:</strong> ' + escapeHtml(result.interpretation || '') + '</p>'
+    ];
+    if (!result.requests.length) {
+        lines.push('<p>No pending department requests were found for this date. Choose the date on which a department actually submitted a pending request.</p>');
+    }
+    for (const request of result.requests) {
+        const safe = request.safe === true;
+        const status = safe ? '<span class="tag good">Section &amp; worker check passed</span>' : '<span class="tag pending">Section/worker risk</span>';
+        lines.push('<div class="deadlock-request-row"><p><strong>' + escapeHtml(request.taskId || '-') + ' — ' + escapeHtml(request.department || 'Department') + '</strong> ' + status + '</p>' +
+            '<p><strong>Work:</strong> ' + escapeHtml(request.workDesc || '-') + '</p>' +
+            '<p><strong>Section:</strong> ' + escapeHtml(request.sectionId || '-') + ' &nbsp; <strong>Requested time:</strong> ' + escapeHtml(request.requestedStart || '-') + '–' + escapeHtml(request.requestedEnd || '-') + '</p>' +
+            '<p><strong>Section resource:</strong> ' + escapeHtml(request.availableSections ?? '-') + ' available &nbsp; <strong>Workers needed:</strong> ' + escapeHtml(request.requiredWorkers ?? '-') + ' &nbsp; <strong>Qualified workers available:</strong> ' + escapeHtml(request.availableWorkers ?? '-') + '</p>' +
+            '<p>' + escapeHtml(request.reason || 'No further details.') + '</p></div>');
+    }
+    lines.push('<p><strong>Scope:</strong> this check considers only section and qualified-worker resources. A conflict means the proposed allocation is unsafe and should be reviewed before approval; pending requests do not hold resources yet, so this is a potential deadlock/resource risk, not proof of an active OS deadlock.</p>');
+    box.innerHTML = lines.join('');
+}
+
+/* Inspect the actual proposed plan without approving it. */
+async function runApprovalRiskPreview() {
+    const box = byId('workerDeadlockResult');
+    if (!box) return;
+    const dateInput = byId('planDate');
+    const date = dateInput?.value || new Date().toISOString().slice(0, 10);
+    box.textContent = 'Checking the proposed plan for ' + date + '…';
+    const result = await api('/api/plan?date=' + encodeURIComponent(date), 'GET');
+    if (!result || result.ok === false || !Array.isArray(result.plan)) {
+        box.textContent = result?.message || 'Could not load the proposed plan. Check MySQL and the app terminal.';
+        return;
+    }
+
+    const safetyRows = Array.isArray(result.resourceSafety) ? result.resourceSafety : [];
+    const safetyByTask = new Map(safetyRows.map(row => [String(row.taskId), row]));
+    const unsafe = safetyRows.filter(row => row.safe === false);
+    const scheduled = result.plan.filter(slot => slot.scheduled !== false);
+    const heading = unsafe.length
+        ? '<span class="tag pending">Approval resource risk found</span>'
+        : '<span class="tag good">No resource risk found by this check</span>';
+    const lines = [
+        '<p><strong>What-if date:</strong> ' + escapeHtml(date) + '</p>',
+        '<p><strong>Result:</strong> ' + heading + '</p>',
+        '<p><strong>Requests in plan:</strong> ' + result.plan.length + '; <strong>scheduled:</strong> ' + scheduled.length + '</p>'
+    ];
+
+    for (const slot of result.plan) {
+        const row = safetyByTask.get(String(slot.taskId));
+        const state = slot.scheduled === false ? 'No time slot found' : row?.safe === false ? 'Resource risk' : row?.safe === true ? 'Resource check passed' : 'Check details';
+        const detail = slot.scheduled === false ? (slot.reason || 'No suitable time slot found.') : (row?.reason || slot.reason || 'No additional details.');
+        lines.push('<p><strong>' + escapeHtml(slot.taskId) + ' — ' + escapeHtml(slot.department || 'Department') + '</strong>: Section ' + escapeHtml(slot.sectionId || '-') + ', ' + escapeHtml(slot.start || '-') + '–' + escapeHtml(slot.end || '-') + ' — ' + escapeHtml(state) + '. ' + escapeHtml(detail) + '</p>');
+    }
+
+    if (unsafe.length) {
+        lines.push('<p><strong>Control Room action:</strong> Do not ignore these warnings. Review or reschedule the affected request before approval.</p>');
+    } else {
+        lines.push('<p><strong>Control Room action:</strong> The proposed plan passes this section/worker resource check. Approval still rechecks resources inside the database transaction.</p>');
+    }
+    lines.push('<p><strong>OS concept note:</strong> A section overlap or unavailable worker is a resource conflict/unsafe allocation, not automatically a true deadlock. A deadlock requires a circular wait. This what-if check does not approve requests or change the database.</p>');
+    box.innerHTML = lines.join('');
+}
+
+/* Check the live MySQL wait-for graph. */
+async function runWorkerDeadlockTest() {
+    const box = byId('workerDeadlockResult');
+    if (!box) return;
+    box.textContent = 'Checking current database waits…';
+    const result = await api('/api/control/deadlock/run', 'POST');
+    if (!result || result.ok === false) {
+        box.textContent = result?.message || 'Could not check deadlocks. Check MySQL and the app terminal.';
+        return;
+    }
+
+    const status = result.deadlockFound
+        ? '<span class="tag pending">Deadlock found</span>'
+        : '<span class="tag good">No deadlock detected</span>';
+    const lines = [
+        '<p><strong>Result:</strong> ' + status + '</p>',
+        '<p><strong>Requests checked:</strong> ' + Number(result.requestsChecked || 0) + '</p>',
+        '<p><strong>Active lock waits:</strong> ' + Number(result.activeLockWaits || 0) + '</p>',
+        '<p>' + escapeHtml(result.explanation || '') + '</p>'
+    ];
+    if (Array.isArray(result.cycle) && result.cycle.length) {
+        lines.push('<p><strong>Wait cycle:</strong> ' + result.cycle.map(escapeHtml).join(' → ') + '</p>');
+    }
+    box.innerHTML = lines.join('');
+}
+
+
+/* Deliberately reproduce a real MySQL deadlock using two worker rows, then roll back. */
+async function runWorkerDeadlockDemo() {
+    const box = byId('workerDeadlockResult');
+    if (!box) return;
+    box.textContent = 'Starting two test transactions…';
+    const result = await api('/api/control/deadlock/demo', 'POST');
+    if (!result || result.ok === false) {
+        box.textContent = result?.message || 'Could not run the demo. Check MySQL and the app terminal.';
+        return;
+    }
+    const heading = result.deadlockReproduced ? 'Deadlock reproduced' : 'Deadlock not reproduced';
+    const colorClass = result.deadlockReproduced ? 'pending' : 'good';
+    const lines = [
+        '<p><strong>Result:</strong> <span class="tag ' + colorClass + '">' + heading + '</span></p>',
+        '<p><strong>Worker rows used:</strong> ' + Number(result.workerOne) + ' and ' + Number(result.workerTwo) + '</p>',
+        '<p><strong>Transaction A:</strong> ' + escapeHtml(result.transactionA || '') + '</p>',
+        '<p><strong>Transaction B:</strong> ' + escapeHtml(result.transactionB || '') + '</p>',
+        '<p>' + escapeHtml(result.message || '') + '</p>'
+    ];
+    box.innerHTML = lines.join('');
+}
+
+/* ---------- Timeline planner (Control Room) ---------- */
+let timelineData = null;
+
+function tlMinutes(value) {
+    const m = /^(\d{1,2}):(\d{2})$/.exec(String(value || ''));
+    return m ? Number(m[1]) * 60 + Number(m[2]) : null;
+}
+
+function tlPercent(minutes) {
+    return Math.max(0, Math.min(100, minutes / 1440 * 100));
+}
+
+function tlSetMessage(text, isError) {
+    const box = byId('timelineMsg');
+    if (!box) return;
+    box.textContent = text || '';
+    box.style.color = isError ? '#ff8d94' : '';
+}
+
+async function loadTimeline() {
+    if (currentRole !== 'CONTROL') return;
+    const date = byId('timelineDate')?.value || localToday();
+    tlSetMessage('');
+
+    const data = await api('/api/plan/timeline?date=' + encodeURIComponent(date));
+    if (!data || data.ok === false || !Array.isArray(data.sections)) {
+        byId('timelineChart').innerHTML = '<p class="tl-note">' + escapeHtml(data?.message || 'Could not load the timeline. Check the app and database.') + '</p>';
+        byId('timelineQueue').innerHTML = '';
+        byId('timelineConflicts').innerHTML = '';
+        return;
+    }
+    timelineData = data;
+    renderTimeline();
+}
+
+// Put overlapping bars of one section on separate rows so none hide each other.
+function tlAssignRows(items) {
+    const rowEnds = [];
+    items.sort((a, b) => a.s - b.s || a.e - b.e);
+    items.forEach(item => {
+        let row = rowEnds.findIndex(end => end <= item.s);
+        if (row === -1) { row = rowEnds.length; rowEnds.push(0); }
+        rowEnds[row] = item.e;
+        item.row = row;
+    });
+    return Math.max(1, rowEnds.length);
+}
+
+function tlOverlaps(items) {
+    const bands = [];
+    for (let i = 0; i < items.length; i++) {
+        for (let j = i + 1; j < items.length; j++) {
+            const a = items[i], b = items[j];
+            if (a.kind !== 'req' && b.kind !== 'req') continue; // only waiting requests cause new conflicts
+            const s = Math.max(a.s, b.s), e = Math.min(a.e, b.e);
+            if (s < e) bands.push({ s, e });
+        }
+    }
+    return bands;
+}
+
+function renderTimeline() {
+    const data = timelineData;
+    if (!data) return;
+    const sections = data.sections.map(sec => sec.section_id || sec.sectionId);
+    const names = {};
+    data.sections.forEach(sec => { names[sec.section_id || sec.sectionId] = sec.section_name || sec.sectionName || ''; });
+
+    const perSection = {};
+    sections.forEach(id => { perSection[id] = []; });
+    const push = (sectionId, item) => {
+        if (item.s === null || item.e === null || item.e <= item.s || !perSection[sectionId]) return;
+        perSection[sectionId].push(item);
+    };
+
+    (data.trains || []).forEach(t => push(t.sectionId, {
+        kind: 'train', label: t.label, s: tlMinutes(t.startTime), e: tlMinutes(t.endTime),
+        tip: t.label + ' ' + t.startTime + '–' + t.endTime }));
+    (data.blocks || []).forEach(b => push(b.section_id, {
+        kind: 'block', label: b.task_id + ' ' + (b.dept_name || ''), s: tlMinutes(b.start_time), e: tlMinutes(b.end_time),
+        tip: b.task_id + ' approved · ' + (b.work_desc || '') + ' · ' + b.start_time + '–' + b.end_time + ' · Team: ' + (b.assigned_workers || 'Not recorded') }));
+    (data.requests || []).forEach(r => push(r.sectionId, {
+        kind: 'req', label: r.taskId + ' ' + r.department + ' (' + r.priority + ')', s: tlMinutes(r.startTime), e: tlMinutes(r.endTime),
+        tip: r.taskId + ' ' + requestStatusLabel(r.status) + ' · ' + (r.workDesc || '') + ' · ' + r.startTime + '–' + r.endTime + ' · Team: ' + (r.requestedTeam || 'ANY') }));
+    let html = '<div class="tl-chart"><div class="tl-axis">';
+    for (let h = 0; h <= 24; h += 2) {
+        html += '<span class="tl-tick" style="left:' + tlPercent(h * 60) + '%">' + String(h % 24).padStart(2, '0') + ':00</span>';
+    }
+    html += '</div>';
+
+    sections.forEach(id => {
+        const items = perSection[id];
+        const rows = tlAssignRows(items);
+        const height = rows * 30 + 12;
+        html += '<div class="tl-row" style="height:' + height + 'px"><div class="tl-label" title="' + escapeHtml(names[id]) + '">' + escapeHtml(id) + '</div>'
+              + '<div class="tl-lane" style="height:' + height + 'px">';
+        tlOverlaps(items).forEach((band, index) => {
+            html += '<div class="tl-conflict-band" style="left:' + tlPercent(band.s) + '%;width:' + (tlPercent(band.e) - tlPercent(band.s)) + '%">'
+                  + (index === 0 ? '<span>OVERLAP</span>' : '') + '</div>';
+        });
+        items.forEach(item => {
+            html += '<div class="tl-bar ' + item.kind + '" style="left:' + tlPercent(item.s) + '%;width:' + (tlPercent(item.e) - tlPercent(item.s))
+                  + '%;top:' + (6 + item.row * 30) + 'px" title="' + escapeHtml(item.tip) + '">' + escapeHtml(item.label) + '</div>';
+        });
+        html += '</div></div>';
+    });
+    html += '</div>';
+    byId('timelineChart').innerHTML = html;
+
+    renderTimelineQueue();
+    renderTimelineConflicts();
+
+    // Open the view around the working day instead of midnight.
+    const scroller = byId('timelineScroll');
+    if (scroller && !scroller.dataset.positioned) {
+        scroller.scrollLeft = scroller.scrollWidth * (6 / 24);
+        scroller.dataset.positioned = '1';
+    }
+}
+
+function renderTimelineQueue() {
+    const pending = (timelineData.requests || []).filter(r => String(r.status).toUpperCase() === 'PENDING');
+    pending.sort((a, b) => a.effectiveRank - b.effectiveRank || b.ageMin - a.ageMin);
+    if (!pending.length) {
+        byId('timelineQueue').innerHTML = '<p class="tl-note" style="margin-top:10px">No requests are waiting for this date.</p>';
+        return;
+    }
+    byId('timelineQueue').innerHTML = pending.map((r, index) => {
+        const rank = Math.min(4, Math.max(1, Number(r.effectiveRank) || 4));
+        return '<div class="tl-queue-item r' + rank + '"><b>' + (index + 1) + '. ' + escapeHtml(r.taskId) + '</b> [' + escapeHtml(r.priority) + ']'
+            + (isTrueFlag(r.aged) ? ' <span class="tl-aging">↑ Aging</span>' : '')
+            + '<small>Section: ' + escapeHtml(r.sectionId) + ' · ' + escapeHtml(r.department) + '</small>'
+            + '<small>Waiting: ' + Number(r.ageMin) + ' min · Rank ' + rank + '</small></div>';
+    }).join('');
+}
+
+function renderTimelineConflicts() {
+    const conflicts = timelineData.conflicts || [];
+    const requests = timelineData.requests || [];
+    const info = id => requests.find(r => r.taskId === id);
+    if (!conflicts.length) {
+        byId('timelineConflicts').innerHTML = '<div class="tl-ok">No overlapping requests on this date.</div>';
+        return;
+    }
+    byId('timelineConflicts').innerHTML = conflicts.map(c => {
+        const a = info(c.taskA), b = info(c.taskB);
+        const nameA = escapeHtml(c.taskA) + (a ? ' (' + escapeHtml(a.department) + ')' : '');
+        const nameB = escapeHtml(c.taskB) + (b ? ' (' + escapeHtml(b.department) + ')' : '');
+        const rejectA = a && String(a.status).toUpperCase() === 'PENDING'
+            ? '<button class="tl-btn tl-red" type="button" onclick="rejectFromTimeline(\'' + escapeHtml(c.taskA) + '\')">Reject ' + escapeHtml(c.taskA) + '</button>' : '';
+        const rejectB = b && String(b.status).toUpperCase() === 'PENDING'
+            ? '<button class="tl-btn tl-red" type="button" onclick="rejectFromTimeline(\'' + escapeHtml(c.taskB) + '\')">Reject ' + escapeHtml(c.taskB) + '</button>' : '';
+        return '<div class="tl-conflict-row"><span><strong>TIME OVERLAP:</strong> ' + nameA + ' conflicts with ' + nameB
+            + ' on section ' + escapeHtml(c.sectionId) + '</span><span>' + rejectA + ' ' + rejectB + '</span></div>';
+    }).join('');
+}
+
+async function rejectFromTimeline(taskId) {
+    const reason = await askForText('Why should ' + taskId + ' be rejected? (5–500 characters)');
+    if (reason === null) return;
+    if (reason.trim().length < 5 || reason.trim().length > 500) {
+        tlSetMessage('Enter a reason of 5–500 characters.', true);
+        return;
+    }
+    const result = await api('/api/control/requests/' + encodeURIComponent(taskId) + '/decision', 'POST', { decision: 'REJECTED', reason });
+    await loadTimeline();
+    tlSetMessage(result.message || (result.ok ? 'Decision saved.' : 'Decision not saved.'), !result.ok);
+}
