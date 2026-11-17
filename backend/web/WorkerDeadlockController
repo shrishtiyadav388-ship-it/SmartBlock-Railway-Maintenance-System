@@ -1,0 +1,47 @@
+package com.smartblock.web;
+
+import com.smartblock.service.WorkerDeadlockService;
+import jakarta.servlet.http.HttpSession;
+import org.springframework.web.bind.annotation.PostMapping;
+import org.springframework.web.bind.annotation.GetMapping;
+import org.springframework.web.bind.annotation.RequestParam;
+import java.time.LocalDate;
+import org.springframework.web.bind.annotation.RequestMapping;
+import org.springframework.web.bind.annotation.RestController;
+
+import java.util.Map;
+
+@RestController
+@RequestMapping("/api/control/deadlock")
+public class WorkerDeadlockController {
+    private final WorkerDeadlockService deadlocks;
+
+    public WorkerDeadlockController(WorkerDeadlockService deadlocks) {
+        this.deadlocks = deadlocks;
+    }
+
+    @GetMapping("/requests")
+    public Map<String, Object> checkDepartmentRequests(
+            @RequestParam(required = false) LocalDate date, HttpSession session) {
+        if (!"CONTROL".equals(session.getAttribute("role"))) {
+            return Map.of("ok", false, "message", "Only the Control Room can check department requests.");
+        }
+        return deadlocks.checkRealPendingRequests(date == null ? LocalDate.now() : date);
+    }
+
+    @PostMapping("/run")
+    public Map<String, Object> check(HttpSession session) {
+        if (!"CONTROL".equals(session.getAttribute("role"))) {
+            return Map.of("ok", false, "message", "Only the Control Room can check deadlocks.");
+        }
+        return deadlocks.checkCurrentDeadlock();
+    }
+
+    @PostMapping("/demo")
+    public Map<String, Object> demo(HttpSession session) {
+        if (!"CONTROL".equals(session.getAttribute("role"))) {
+            return Map.of("ok", false, "message", "Only the Control Room can run the deadlock demo.");
+        }
+        return deadlocks.runDeadlockDemo();
+    }
+}
