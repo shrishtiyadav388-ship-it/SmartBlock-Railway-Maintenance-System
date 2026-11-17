@@ -1,0 +1,280 @@
+package com.smartblock.service;
+
+import org.springframework.jdbc.core.JdbcTemplate;
+import com.smartblock.model.Slot;
+import java.sql.Date;
+import java.time.LocalDate;
+import org.springframework.stereotype.Service;
+
+import javax.sql.DataSource;
+import java.sql.Connection;
+import java.sql.PreparedStatement;
+import java.sql.ResultSet;
+import java.sql.SQLException;
+import java.util.*;
+import java.util.concurrent.*;
+
+@Service
+public class WorkerDeadlockService {
+    private final JdbcTemplate jdbc;
+    private final DataSource dataSource;
+    private final BankersResourceSafetyService resourceSafety;
+
+    public WorkerDeadlockService(JdbcTemplate jdbc, DataSource dataSource,
+            BankersResourceSafetyService resourceSafety) {
+        this.jdbc = jdbc;
+        this.dataSource = dataSource;
+        this.resourceSafety = resourceSafety;
+    }
+
+    public Map<String, Object> checkRealPendingRequests(LocalDate date) {
+        try {
+            List<Map<String, Object>> requests = jdbc.queryForList("""
+                    SELECT t.task_id AS taskId, d.dept_name AS department, t.work_desc AS workDesc,
+                           t.section_id AS sectionId, t.priority AS priority,
+                           t.required_workers AS requiredWorkers,
+                           r.requested_start AS requestedStart,
+                           r.requested_end AS requestedEnd,
+                           t.status AS status
+                    FROM maintenance_task t
+                    JOIN department d ON d.dept_id = t.dept_id
+                    JOIN block_request r ON r.task_id = t.task_id
+                    WHERE t.status = 'PENDING' AND t.work_date = ?
+                    ORDER BY r.requested_start, t.section_id, t.task_id
+                    """, Date.valueOf(date));
+
+            List<Slot> proposed = new ArrayList<>();
+            for (Map<String, Object> row : requests) {
+                String start = String.valueOf(row.get("requestedStart"));
+                String end = String.valueOf(row.get("requestedEnd"));
+                Slot slot = new Slot(String.valueOf(row.get("taskId")),
+                        String.valueOf(row.get("department")), String.valueOf(row.get("sectionId")),
+                        String.valueOf(row.get("priority")), start, end, 0);
+                slot.workDesc = String.valueOf(row.get("workDesc"));
+                proposed.add(slot);
+            }
+
+            List<Map<String, Object>> checks = resourceSafety.assessPlan(date, proposed);
+            Map<String, Map<String, Object>> byTask = new HashMap<>();
+            for (Map<String, Object> check : checks)
+                byTask.put(String.valueOf(check.get("taskId")), check);
+
+            List<Map<String, Object>> results = new ArrayList<>();
+            int unsafe = 0;
+            for (Map<String, Object> request : requests) {
+                Map<String, Object> check = byTask.get(String.valueOf(request.get("taskId")));
+                Map<String, Object> item = new LinkedHashMap<>(request);
+                if (check != null) {
+                    item.put("safe", check.get("safe"));
+                    item.put("availableWorkers", check.get("availableWorkers"));
+                    item.put("neededWorkers", check.get("neededWorkers"));
+                    item.put("availableSections", check.get("availableSections"));
+                    item.put("safeSequence", check.get("safeSequence"));
+                    item.put("reason", check.get("reason"));
+                    if (!Boolean.TRUE.equals(check.get("safe")))
+                        unsafe++;
+                } else {
+                    item.put("safe", false);
+                    item.put("reason", "Could not evaluate this request's resource claim.");
+                    unsafe++;
+                }
+                results.add(item);
+            }
+
+            Map<String, Object> result = new LinkedHashMap<>();
+            result.put("ok", true);
+            result.put("date", date.toString());
+            result.put("requestsChecked", results.size());
+            result.put("unsafeRequests", unsafe);
+            result.put("requests", results);
+            result.put("deadlockFound", false);
+            result.put("interpretation", results.isEmpty()
+                    ? "No pending department requests were found for this date. Select a date with real pending requests."
+                    : unsafe > 0
+                            ? "The real pending requests contain an unsafe resource allocation risk if accepted in this proposed order. This is not proof of an active database deadlock; SmartBlock should reschedule or refuse unsafe claims."
+                            : "All real pending requests passed this resource-safety simulation in the proposed order. No hypothetical deadlock risk was found by this check.");
+            result.put("importantNote",
+                    "Pending requests do not hold workers before approval, so they cannot already be in a true resource deadlock. This check simulates their real requested section/time/worker needs before approval. The live database wait check is separate.");
+            return result;
+        } catch (Exception ex) {
+            return Map.of("ok", false, "message",
+                    "Could not check real pending department requests. Verify the selected date and database setup. Details: "
+                            + safeMessage(ex));
+        }
+    }
+
+    /**
+     * Safely reproduces an InnoDB row-lock deadlock using two read-only
+     * transactions.
+     */
+    public Map<String, Object> runDeadlockDemo() {
+        List<Integer> ids;
+        try {
+            ids = jdbc.query("SELECT worker_id FROM worker_resource WHERE active = TRUE ORDER BY worker_id LIMIT 2",
+                    (rs, rowNum) -> rs.getInt(1));
+        } catch (Exception ex) {
+            return Map.of("ok", false, "message", "Could not find workers in worker_resource: " + safeMessage(ex));
+        }
+        if (ids.size() < 2) {
+            return Map.of("ok", false, "message",
+                    "Add at least two active workers in the Worker availability section, then try again.");
+        }
+
+        CountDownLatch bothFirstLocksTaken = new CountDownLatch(2);
+        ExecutorService pool = Executors.newFixedThreadPool(2);
+        try {
+            Future<String> a = pool.submit(() -> lockInOppositeOrder(ids.get(0), ids.get(1), bothFirstLocksTaken));
+            Future<String> b = pool.submit(() -> lockInOppositeOrder(ids.get(1), ids.get(0), bothFirstLocksTaken));
+            String resultA = a.get(15, TimeUnit.SECONDS);
+            String resultB = b.get(15, TimeUnit.SECONDS);
+            boolean reproduced = resultA.startsWith("DEADLOCK") || resultB.startsWith("DEADLOCK");
+            Map<String, Object> result = new LinkedHashMap<>();
+            result.put("ok", true);
+            result.put("deadlockReproduced", reproduced);
+            result.put("workerOne", ids.get(0));
+            result.put("workerTwo", ids.get(1));
+            result.put("transactionA", resultA);
+            result.put("transactionB", resultB);
+            result.put("message", reproduced
+                    ? "Deadlock reproduced. MySQL detected the circular wait and rolled back one transaction (error 1213). No worker data was changed."
+                    : "The demo did not reproduce a deadlock this time. Check the app terminal and ensure MySQL/InnoDB is running.");
+            return result;
+        } catch (Exception ex) {
+            return Map.of("ok", false, "message",
+                    "Demo could not finish. Check MySQL and try again. Details: " + safeMessage(ex));
+        } finally {
+            pool.shutdownNow();
+        }
+    }
+
+    private String lockInOppositeOrder(int firstId, int secondId, CountDownLatch ready) {
+        try (Connection connection = dataSource.getConnection()) {
+            connection.setAutoCommit(false);
+            try {
+                lockWorker(connection, firstId);
+                ready.countDown();
+                if (!ready.await(5, TimeUnit.SECONDS)) {
+                    throw new SQLException("The second transaction did not acquire its first lock in time.");
+                }
+                lockWorker(connection, secondId);
+                return "Completed both locks; rolled back safely.";
+            } catch (SQLException ex) {
+                if (ex.getErrorCode() == 1213 || "40001".equals(ex.getSQLState())) {
+                    return "DEADLOCK: MySQL selected this transaction as the victim (error 1213).";
+                }
+                return "Could not complete: " + safeMessage(ex);
+            } finally {
+                try {
+                    connection.rollback();
+                } catch (SQLException ignored) {
+                }
+            }
+        } catch (Exception ex) {
+            return "Could not run: " + safeMessage(ex);
+        }
+    }
+
+    private void lockWorker(Connection connection, int workerId) throws SQLException {
+        try (PreparedStatement statement = connection.prepareStatement(
+                "SELECT worker_id FROM worker_resource WHERE worker_id = ? FOR UPDATE")) {
+            statement.setInt(1, workerId);
+            try (ResultSet rs = statement.executeQuery()) {
+                if (!rs.next())
+                    throw new SQLException("Worker " + workerId + " no longer exists.");
+            }
+        }
+    }
+
+    /** Checks MySQL's live lock-wait graph; it does not create a fake deadlock. */
+    public Map<String, Object> checkCurrentDeadlock() {
+        try {
+            List<Map<String, Object>> waits = jdbc.queryForList("""
+                    SELECT CAST(w.REQUESTING_ENGINE_TRANSACTION_ID AS CHAR) AS waiting_tx,
+                           CAST(w.BLOCKING_ENGINE_TRANSACTION_ID AS CHAR) AS blocking_tx
+                    FROM performance_schema.data_lock_waits w
+                    WHERE w.REQUESTING_ENGINE_TRANSACTION_ID IS NOT NULL
+                      AND w.BLOCKING_ENGINE_TRANSACTION_ID IS NOT NULL
+                    """);
+
+            Integer requestCount = jdbc.queryForObject("""
+                    SELECT COUNT(*) FROM maintenance_task
+                    WHERE status IN ('PENDING', 'APPROVED', 'RESCHEDULE_REQUIRED')
+                    """, Integer.class);
+
+            Map<String, List<String>> graph = new LinkedHashMap<>();
+            for (Map<String, Object> wait : waits) {
+                String waiting = String.valueOf(wait.get("waiting_tx"));
+                String blocking = String.valueOf(wait.get("blocking_tx"));
+                graph.computeIfAbsent(waiting, key -> new ArrayList<>()).add(blocking);
+                graph.computeIfAbsent(blocking, key -> new ArrayList<>());
+            }
+
+            List<String> cycle = findCycle(graph);
+            boolean deadlock = !cycle.isEmpty();
+            String explanation;
+            if (deadlock) {
+                explanation = "A circular wait exists: each transaction is waiting for a lock held by the next transaction. MySQL normally rolls back one transaction to break this cycle.";
+            } else if (waits.isEmpty()) {
+                explanation = "No deadlock detected right now. There is no active database lock-wait cycle. Worker or time-slot conflicts are scheduling conflicts, not deadlocks.";
+            } else {
+                explanation = "Some transactions are waiting for locks, but their wait chain does not form a cycle. This is a lock wait, not a deadlock.";
+            }
+
+            Map<String, Object> result = new LinkedHashMap<>();
+            result.put("ok", true);
+            result.put("database", "MySQL InnoDB live lock graph");
+            result.put("deadlockFound", deadlock);
+            result.put("activeLockWaits", waits.size());
+            result.put("requestsChecked", requestCount == null ? 0 : requestCount);
+            result.put("cycle", cycle);
+            result.put("explanation", explanation);
+            return result;
+        } catch (Exception ex) {
+            return Map.of("ok", false, "message",
+                    "Could not inspect MySQL lock waits. Check that MySQL 8 is running and the database user can read performance_schema.data_lock_waits. Details: "
+                            + safeMessage(ex));
+        }
+    }
+
+    private List<String> findCycle(Map<String, List<String>> graph) {
+        Set<String> visited = new HashSet<>();
+        Set<String> active = new HashSet<>();
+        List<String> path = new ArrayList<>();
+        for (String node : graph.keySet()) {
+            List<String> cycle = visit(node, graph, visited, active, path);
+            if (!cycle.isEmpty())
+                return cycle;
+        }
+        return List.of();
+    }
+
+    private List<String> visit(String node, Map<String, List<String>> graph, Set<String> visited,
+            Set<String> active, List<String> path) {
+        if (active.contains(node)) {
+            int start = path.indexOf(node);
+            List<String> cycle = new ArrayList<>(path.subList(start, path.size()));
+            cycle.add(node);
+            return cycle;
+        }
+        if (visited.contains(node))
+            return List.of();
+        visited.add(node);
+        active.add(node);
+        path.add(node);
+        for (String next : graph.getOrDefault(node, List.of())) {
+            List<String> cycle = visit(next, graph, visited, active, path);
+            if (!cycle.isEmpty())
+                return cycle;
+        }
+        path.remove(path.size() - 1);
+        active.remove(node);
+        return List.of();
+    }
+
+    private String safeMessage(Throwable ex) {
+        Throwable root = ex;
+        while (root.getCause() != null)
+            root = root.getCause();
+        return root.getMessage() == null ? root.getClass().getSimpleName() : root.getMessage();
+    }
+}
