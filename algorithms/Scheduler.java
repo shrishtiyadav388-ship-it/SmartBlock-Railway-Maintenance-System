@@ -8,6 +8,7 @@ import java.util.ArrayList;
 import java.util.Comparator;
 import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Locale;
 import java.util.Map;
 
 public class Scheduler {
@@ -58,7 +59,8 @@ public class Scheduler {
         int agingStep = Math.max(1, agingStepMinutes);
         Map<String, List<Task>> bySection = new LinkedHashMap<>();
         for (Task task : ScheduleHelper.pendingTasks(tasks))
-            bySection.computeIfAbsent(task.sectionId, key -> new ArrayList<>()).add(task);
+            bySection.computeIfAbsent(task.sectionId.toUpperCase(Locale.ROOT),
+                    key -> new ArrayList<>()).add(task);
 
         List<Slot> plan = new ArrayList<>();
         for (Map.Entry<String, List<Task>> section : bySection.entrySet())
