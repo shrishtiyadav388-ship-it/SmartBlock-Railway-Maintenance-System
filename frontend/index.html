@@ -3,18 +3,20 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
+<meta name="description" content="SmartBlock railway maintenance request and block planning system.">
 <title>SmartBlock</title>
-<link rel="stylesheet" href="css/style.css?v=20261026-timeline">
+<link rel="stylesheet" href="style.css">
 </head>
 <body>
 
+<!-- Public sign-in screen; demo credentials are for local demonstration only. -->
 <div id="loginScreen" class="login-wrap">
   <div class="login-card">
     <div class="login-heading">
       <div class="logo">SB</div>
       <div>
         <h1>SmartBlock</h1>
-        <p class="sub">Plan railway maintenance without clashes</p>
+        <p class="sub">Railway maintenance planner</p>
       </div>
     </div>
 
@@ -28,8 +30,8 @@
     </form>
 
     <div class="demo-box">
-      <h2>Try SmartBlock</h2>
-      <p class="note">Use an account below to sign in.</p>
+      <h2>Demo accounts</h2>
+      <p class="note">Enter these details in the login form.</p>
       <div class="demo-list">
         <div class="demo-account">
           <strong>Control Room</strong>
@@ -58,6 +60,7 @@
 
 <div id="app" class="hidden">
 
+  <!-- Authenticated application header and role-filtered navigation. -->
   <header class="topbar">
     <div class="brand">SmartBlock</div>
     <div class="who">
@@ -66,13 +69,12 @@
     </div>
   </header>
 
-  <nav class="tabs">
+  <!-- Tab visibility is a UI convenience; API authorization is enforced by the backend. -->
+  <nav class="tabs" aria-label="Main navigation">
     <button class="tab active" data-roles="DEPARTMENT,CONTROL" onclick="showTab('dashboard', this)">Dashboard</button>
-    <button class="tab" data-roles="DEPARTMENT,CONTROL" onclick="showTab('assistant', this)">AI Assistant</button>
     <button class="tab" data-roles="DEPARTMENT" onclick="showTab('request', this)">New Request</button>
     <button class="tab" data-roles="CONTROL" onclick="showTab('engine', this)">Tools</button>
     <button class="tab" data-roles="CONTROL" onclick="showTab('plan', this)">Plan</button>
-    <button class="tab" data-roles="CONTROL" onclick="showTab('timeline', this)">Timeline</button>
     <button class="tab" data-roles="DEPARTMENT,CONTROL" onclick="showTab('completion', this)">Work status</button>
     <button class="tab" data-roles="CONTROL" onclick="showTab('reports', this)">Reports</button>
   </nav>
@@ -84,12 +86,13 @@
 
   <main>
 
+    <!-- Dashboard filters, calendar, request metrics, and request list. -->
     <section id="dashboard" class="page">
       <div id="controlDashboardFilters" class="panel dashboard-filter-panel hidden">
         <div class="section-heading">
           <div>
             <h2>Requests</h2>
-            <p class="note">Find requests by date or status.</p>
+            <p class="note">Choose a date and status.</p>
           </div>
           <span class="tag good">Control Room</span>
         </div>
@@ -133,7 +136,7 @@
         <div class="section-heading">
           <div>
             <h2>Calendar</h2>
-            <p class="note">Select a day to view requests.</p>
+            <p class="note">Choose a day to see its requests and conflicts.</p>
           </div>
           <span id="calendarMonthLabel" class="tag good"></span>
         </div>
@@ -159,38 +162,13 @@
       </div>
     </section>
 
-    <section id="assistant" class="page hidden">
-      <div class="panel chat-panel">
-        <div class="section-heading">
-          <div>
-            <h2>SmartBlock AI Assistant</h2>
-            <p class="note">Ask about SmartBlock, teams, OS or DBMS.</p>
-          </div>
-          <button class="btn-grey" type="button" onclick="clearChat()">New chat</button>
-        </div>
-        <div class="chat-suggestions" aria-label="Suggested questions">
-          <button class="btn-grey" type="button" onclick="askChatSuggestion('How does SmartBlock work?')">How SmartBlock works</button>
-          <button class="btn-grey" type="button" onclick="askChatSuggestion('Explain deadlock in simple words.')">Explain deadlock</button>
-          <button class="btn-grey" type="button" onclick="askChatSuggestion('How are maintenance teams allocated?')">Team allocation</button>
-        </div>
-        <div id="chatMessages" class="chat-messages" role="log" aria-live="polite">
-          <div class="chat-bubble assistant-bubble">Hi! Ask me a question about SmartBlock or its OS/DBMS concepts.</div>
-        </div>
-        <form id="chatForm" class="chat-form" onsubmit="event.preventDefault(); sendChatMessage();">
-          <label class="sr-only" for="chatInput">Your message</label>
-          <textarea id="chatInput" rows="2" maxlength="1500" placeholder="Type your question..." required></textarea>
-          <button id="chatSendButton" class="btn-main" type="submit">Send</button>
-        </form>
-        <p id="chatStatus" class="note" aria-live="polite">Offline assistant is ready. Add an API key only for enhanced replies.</p>
-      </div>
-    </section>
-
+    <!-- Completion reporting for the control room and departments. -->
     <section id="completion" class="page hidden">
       <div id="completionStatusPanel" class="panel hidden">
         <div class="section-heading">
           <div>
             <h2>Work status</h2>
-            <p class="note">Jobs needing an update show up here.</p>
+            <p class="note">If the approved time ends with no update, it appears here automatically.</p>
           </div>
           <button class="btn-grey" onclick="loadCompletionPanel()">Refresh</button>
         </div>
@@ -201,7 +179,7 @@
         <div class="section-heading">
           <div>
             <h2>My work</h2>
-            <p class="note">Update your job when you finish.</p>
+            <p class="note">After the job, report completed or not completed.</p>
           </div>
           <button class="btn-grey" onclick="loadDepartmentCompletion()">Refresh</button>
         </div>
@@ -209,6 +187,7 @@
       </div>
     </section>
 
+    <!-- Department maintenance-request form. -->
     <section id="request" class="page hidden">
       <div class="panel narrow">
         <h2>New request</h2>
@@ -216,7 +195,7 @@
         <input id="fRevisesTaskId" type="hidden" value="">
         <div id="revisionNotice" class="note hidden" role="status"></div>
 
-        <label>Maintenance date</label>
+        <label for="fDate">Maintenance date</label>
         <input id="fDate" type="date" required>
 
         <label for="fSection">Track section</label>
@@ -230,37 +209,22 @@
         <label for="fWork">Work description</label>
         <textarea id="fWork" rows="3" placeholder="Describe the maintenance work" required minlength="3" maxlength="100"></textarea>
 
-        <label>Priority</label>
+        <label for="fPriority">Priority</label>
         <select id="fPriority">
           <option>Critical</option><option>High</option>
           <option selected>Medium</option><option>Low</option>
         </select>
 
-        <label>Duration (minutes)</label>
+        <label for="fDuration">Duration (minutes)</label>
         <input id="fDuration" type="number" value="60" min="15" max="720" step="15">
-
-        <label for="fRequestedTeam">Preferred department team</label>
-        <select id="fRequestedTeam">
-          <option value="ANY" selected>Any available team</option>
-          <option value="A">Team A</option>
-          <option value="B">Team B</option>
-        </select>
-        <p class="note">Choose a team or use any available team.</p>
-
-        <label for="fRequiredWorkers">Teams required for this job</label>
-        <select id="fRequiredWorkers">
-          <option value="1" selected>1 team</option>
-          <option value="2">Both teams (2 teams)</option>
-        </select>
-        <p class="note">Both teams must be free for the full time slot.</p>
 
         <div class="row">
           <div>
-            <label>Start time</label>
+            <label for="fStart">Start time</label>
             <input id="fStart" type="time" value="10:00" required>
           </div>
           <div>
-            <label>End time</label>
+            <label for="fEnd">End time</label>
             <input id="fEnd" type="time" value="11:00" required>
           </div>
         </div>
@@ -270,49 +234,44 @@
       </div>
     </section>
 
+    <!-- Control-room conflict, algorithm comparison, and resource tools. -->
     <section id="engine" class="page hidden">
 
       <div class="panel">
         <h2>Check conflicts</h2>
-        <p class="note">Spot time clashes.</p>
-        <label>Planning date</label>
+        <p class="note">Find requests that overlap.</p>
+        <label for="engineDate">Planning date</label>
         <input id="engineDate" type="date" onchange="syncPlannerDate('engineDate')">
         <button class="btn-main" onclick="loadConflicts()">Check</button>
         <div id="conflictBox"></div>
       </div>
 
       <div class="panel">
-        <h2>Schedule comparison</h2>
-        <button class="btn-main" onclick="loadScheduling()">Compare methods</button>
+        <h2>Compare schedules</h2>
+        <p class="note">See how different scheduling methods compare.</p>
+        <button class="btn-main" onclick="loadScheduling()">Compare</button>
         <div id="schedBox"></div>
       </div>
 
       <div class="panel">
-        <h2>Worker availability</h2>
-        <button class="btn-main" onclick="loadAllocation()">Check teams</button>
+        <h2>Resource allocation</h2>
+        <p class="note">See how jobs are assigned to resources.</p>
+        <button class="btn-main" onclick="loadAllocation()">Check allocation</button>
         <div id="allocBox"></div>
-      </div>
-
-      <div class="panel deadlock-panel">
-        <h2>Section &amp; worker deadlock-risk check</h2>
-        <p>Checks real pending Engineering, Signal and Traction requests for just two resources: the railway section and qualified workers. It compares requested times with existing approved bookings and other pending requests. This is a pre-approval risk check; it does not approve or change requests.</p>
-        <button class="btn-main" type="button" onclick="checkRealDepartmentRequests()">Check section &amp; worker risks</button>
-        <div id="workerDeadlockResult" class="deadlock-result" aria-live="polite">Choose the planning date, then check real pending department requests for section and worker risks.</div>
       </div>
 
 </section>
 
+    <!-- Plan preview, approval, and saved-plan search. -->
     <section id="plan" class="page hidden">
       <div class="panel">
-        <h2>Preview and approve plan</h2>
-        <p class="note">Check the time, section and team availability before saving.</p>
-        <label>Planning date</label>
+        <h2>Create block plan</h2>
+        <p class="note">Check the plan before saving it.</p>
+        <label for="planDate">Planning date</label>
         <input id="planDate" type="date" onchange="syncPlannerDate('planDate')">
 
-        <div class="plan-actions">
-          <button class="btn-main" onclick="loadPlan()">Preview plan</button>
-          <button class="btn-ok" onclick="approvePlan()">Approve and save</button>
-        </div>
+        <button class="btn-main" onclick="loadPlan()">Preview plan</button>
+        <button class="btn-ok" onclick="approvePlan()">Approve and save</button>
 
         <div id="planBox"></div>
         <div id="approveBox"></div>
@@ -320,7 +279,10 @@
 
       <div class="panel">
         <div class="section-heading">
-          <div><h2>Approved plans</h2></div>
+          <div>
+            <h2>Saved plans</h2>
+            
+          </div>
         </div>
         <div class="row planner-filters">
           <div>
@@ -345,47 +307,7 @@
       </div>
     </section>
 
-    <section id="timeline" class="page hidden">
-      <div class="tl-wrap">
-        <div class="tl-head">
-          <div>
-            <h2>Section timeline &amp; block planner</h2>
-            <p class="tl-note">Trains, approved blocks and waiting requests for one day. Red areas show overlaps.</p>
-          </div>
-          <div class="tl-controls">
-            <input id="timelineDate" type="date" aria-label="Timeline date" onchange="loadTimeline()">
-            <button class="tl-btn" type="button" onclick="loadTimeline()">Refresh</button>
-          </div>
-        </div>
-
-        <div class="tl-legend">
-          <span><i class="lg lg-train"></i>Train</span>
-          <span><i class="lg lg-block"></i>Approved block</span>
-          <span><i class="lg lg-req"></i>Waiting request</span>
-          <span><i class="lg lg-conf"></i>Overlap</span>
-        </div>
-
-        <div class="tl-layout">
-          <div class="tl-main">
-            <div id="timelineScroll" class="tl-scroll"><div id="timelineChart"></div></div>
-          </div>
-          <aside class="tl-side">
-            <h3>Request queue &amp; aging</h3>
-            <p class="tl-note">Waiting requests, best rank first. Rank improves every 30 minutes of waiting.</p>
-            <div id="timelineQueue"></div>
-          </aside>
-        </div>
-
-        <div class="tl-actions">
-          <div class="tl-actions-head">
-            <h3>Conflict action center</h3>
-          </div>
-          <div id="timelineConflicts"></div>
-          <p id="timelineMsg" class="tl-msg" role="status"></p>
-        </div>
-      </div>
-    </section>
-
+    <!-- Control-room reports. -->
     <section id="reports" class="page hidden">
       <div class="panel">
         <h2>Reports</h2>
@@ -398,6 +320,7 @@
   </main>
 </div>
 
-<script src="js/app.js?v=20261026-timeline"></script>
+<script src="app.js?v=20261016-no-prompt"></script>
 </body>
 </html>
+
