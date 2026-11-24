@@ -1,344 +1,315 @@
+-- SmartBlock Railway Maintenance Block Planning System schema.
+-- Target: MySQL 8.0 or later.
+-- Creates the database and tables for access control, railway resources,
+-- maintenance requests, schedule planning, audit events, and assistant chat.
+-- Run against a fresh database; this script is not an incremental migration.
+
+CREATE DATABASE smartblock;
+USE smartblock;
 
 
-DROP DATABASE IF EXISTS smartblock_db;
-CREATE DATABASE smartblock_db;
-USE smartblock_db;
+-- 1. USERS AND ACCESS CONTROL
+-- Roles and departments are lookup tables referenced by user accounts.
 
-CREATE TABLE department (
-    dept_id   INT AUTO_INCREMENT PRIMARY KEY,
-    dept_name VARCHAR(50) NOT NULL UNIQUE
+-- Stores the roles that control application permissions.
+CREATE TABLE roles (
+    id INT AUTO_INCREMENT PRIMARY KEY,
+    name VARCHAR(20) NOT NULL UNIQUE
 );
 
 
-CREATE TABLE section (
-    section_id   VARCHAR(50) PRIMARY KEY,
-    section_name VARCHAR(50) NOT NULL,
-    status       VARCHAR(20) NOT NULL DEFAULT 'AVAILABLE',
-    CONSTRAINT chk_fixed_sections CHECK (section_id IN ('S1', 'S2', 'S3'))
+-- Stores railway departments that submit maintenance requests.
+CREATE TABLE departments (
+    id INT AUTO_INCREMENT PRIMARY KEY,
+    name VARCHAR(50) NOT NULL UNIQUE
 );
 
-CREATE TABLE app_user (
-    user_id   INT AUTO_INCREMENT PRIMARY KEY,
-    username  VARCHAR(40) NOT NULL UNIQUE,
+
+-- Stores login identity and each user's role and optional department.
+CREATE TABLE users (
+    id INT AUTO_INCREMENT PRIMARY KEY,
+    name VARCHAR(100) NOT NULL,
+    email VARCHAR(120) NOT NULL UNIQUE,
     password_hash VARCHAR(255) NOT NULL,
-    role      VARCHAR(20) NOT NULL,
-    dept_id   INT NULL,
-    CONSTRAINT chk_user_role CHECK (
-        (role = 'CONTROL' AND dept_id IS NULL) OR
-        (role = 'DEPARTMENT' AND dept_id IS NOT NULL)
-    ),
-    FOREIGN KEY (dept_id) REFERENCES department(dept_id)
+
+    role_id INT NOT NULL,
+    department_id INT NULL,
+
+    is_active BOOLEAN DEFAULT TRUE,
+    created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+
+    FOREIGN KEY (role_id) REFERENCES roles(id),
+    FOREIGN KEY (department_id) REFERENCES departments(id)
 );
 
 
-CREATE TABLE task_id_sequence (
-    sequence_id BIGINT AUTO_INCREMENT PRIMARY KEY,
-    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+-- 2. RAILWAY RESOURCES
+-- Sections are schedulable resources. Assets and timetable entries are
+-- associated with a section through section_id.
+
+-- Railway sections where maintenance work is performed
+CREATE TABLE sections (
+    id INT AUTO_INCREMENT PRIMARY KEY,
+    code VARCHAR(20) NOT NULL UNIQUE,
+    name VARCHAR(100) NOT NULL,
+    zone VARCHAR(50),
+
+    is_active BOOLEAN DEFAULT TRUE
+);
+
+CREATE TABLE assets (
+    id INT AUTO_INCREMENT PRIMARY KEY,
+    name VARCHAR(100) NOT NULL,
+    section_id INT,
+    FOREIGN KEY (section_id) REFERENCES sections(id)
+);
+
+-- Stores train arrival and departure times that constrain maintenance.
+CREATE TABLE train_timetable (
+    id INT AUTO_INCREMENT PRIMARY KEY,
+    section_id INT NOT NULL,
+
+    train_no VARCHAR(20) NOT NULL,
+    arrival_time TIME NOT NULL,
+    departure_time TIME NOT NULL,
+
+    FOREIGN KEY (section_id) REFERENCES sections(id)
 );
 
 
-CREATE TABLE maintenance_task (
-    task_id      VARCHAR(10) PRIMARY KEY,
-    dept_id      INT NOT NULL,
-    section_id   VARCHAR(50) NOT NULL,
-    work_date    DATE NOT NULL,
-    work_desc    VARCHAR(100),
-    priority     VARCHAR(10) NOT NULL,       
-    duration_min INT NOT NULL,
-    required_workers INT NOT NULL DEFAULT 1,
-    requested_team VARCHAR(10) NOT NULL DEFAULT 'ANY',
-    arrival_time VARCHAR(5) NOT NULL,        
-    request_fingerprint CHAR(64) NOT NULL,
-    status       VARCHAR(25) NOT NULL DEFAULT 'PENDING',
-    decision_reason VARCHAR(500) NULL,
-    status_updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
-    completion_status VARCHAR(20) NOT NULL DEFAULT 'NOT_STARTED', 
-    completion_reported_at TIMESTAMP NULL DEFAULT NULL,
-    completion_reported_by VARCHAR(40) NULL,
-    completion_report_note VARCHAR(500) NULL,
-    status_requested_at TIMESTAMP NULL DEFAULT NULL,
-    status_requested_by VARCHAR(40) NULL,
-    status_request_note VARCHAR(500) NULL,
-    completed_at TIMESTAMP NULL DEFAULT NULL,
-    completed_by VARCHAR(40) NULL,
-    completion_note VARCHAR(500) NULL,
-    supersedes_task_id VARCHAR(10) NULL,
-    UNIQUE KEY uq_request_fingerprint (request_fingerprint),
-    UNIQUE KEY uq_task_section (task_id, section_id),
-    KEY idx_task_date_section (work_date, section_id),
-    FOREIGN KEY (dept_id) REFERENCES department(dept_id),
-    FOREIGN KEY (section_id) REFERENCES section(section_id),
-    CONSTRAINT fk_task_supersedes FOREIGN KEY (supersedes_task_id) REFERENCES maintenance_task(task_id),
-    CONSTRAINT chk_required_workers CHECK (required_workers BETWEEN 1 AND 2),
-    CONSTRAINT chk_requested_team CHECK (requested_team IN ('A', 'B', 'ANY'))
+-- 3. MAINTENANCE REQUESTS
+
+-- Main input table for the scheduling algorithms. Each request belongs to a
+-- department and section, may target a specific asset, and moves through the
+-- workflow represented by status.
+CREATE TABLE maintenance_requests (
+    id INT AUTO_INCREMENT PRIMARY KEY,
+
+    department_id INT NOT NULL,
+    section_id INT NOT NULL,
+    asset_id INT NULL,
+
+    work_description VARCHAR(255) NOT NULL,
+
+    requested_start DATETIME NOT NULL,
+    duration_minutes INT NOT NULL
+        CHECK (duration_minutes > 0),
+
+    priority ENUM(
+        'Low',
+        'Medium',
+        'High',
+        'Critical'
+    ) NOT NULL,
+
+    -- Scheduling state that may be recalculated while producing a plan.
+    arrival_time DATETIME DEFAULT CURRENT_TIMESTAMP,
+    waiting_minutes INT DEFAULT 0,
+    effective_priority DECIMAL(6,2) DEFAULT 0,
+
+    status ENUM(
+        'Pending',
+        'Conflict',
+        'Proposed',
+        'Approved',
+        'Revised',
+        'Rejected'
+    ) DEFAULT 'Pending',
+
+    submitted_by INT NOT NULL,
+
+    created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+
+    FOREIGN KEY (department_id)
+        REFERENCES departments(id),
+
+    FOREIGN KEY (section_id)
+        REFERENCES sections(id),
+
+    FOREIGN KEY (asset_id)
+        REFERENCES assets(id),
+
+    FOREIGN KEY (submitted_by)
+        REFERENCES users(id),
+
+    INDEX idx_section_time (section_id, requested_start),
+    INDEX idx_status (status)
 );
 
 
--- Shared worker crews are database resources. InnoDB row locks protect them
--- when concurrent jobs try to acquire workers.
-CREATE TABLE worker_resource (
-    worker_id INT AUTO_INCREMENT PRIMARY KEY,
-    worker_code VARCHAR(10) NOT NULL UNIQUE,
-    worker_name VARCHAR(60) NOT NULL,
-    skill VARCHAR(40) NOT NULL,
-    team_code VARCHAR(10) NOT NULL DEFAULT 'A',
-    active BOOLEAN NOT NULL DEFAULT TRUE
-) ENGINE=InnoDB;
+-- 4. REQUEST STATUS HISTORY
 
-CREATE TABLE completion_history (
-    completion_event_id INT AUTO_INCREMENT PRIMARY KEY,
-    task_id VARCHAR(10) NOT NULL,
-    event_type VARCHAR(20) NOT NULL, 
-    performed_by VARCHAR(40) NOT NULL,
-    event_note VARCHAR(500) NULL,
-    event_time TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
-    KEY idx_completion_task_time (task_id, event_time),
-    CONSTRAINT fk_completion_history_task FOREIGN KEY (task_id) REFERENCES maintenance_task(task_id)
-);
+-- Records request status decisions, reasons, timestamps, and actors.
+CREATE TABLE request_status_history (
+    id INT AUTO_INCREMENT PRIMARY KEY,
 
-CREATE TABLE request_decision_history (
-    decision_id INT AUTO_INCREMENT PRIMARY KEY,
-    task_id VARCHAR(10) NOT NULL,
-    previous_status VARCHAR(25) NOT NULL,
-    new_status VARCHAR(25) NOT NULL,
-    reason VARCHAR(500) NOT NULL,
-    changed_by VARCHAR(40) NOT NULL,
-    changed_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
-    KEY idx_decision_task_time (task_id, changed_at),
-    CONSTRAINT fk_decision_task FOREIGN KEY (task_id) REFERENCES maintenance_task(task_id)
-);
+    request_id INT NOT NULL,
 
-CREATE TABLE block_request (
-    request_id      INT AUTO_INCREMENT PRIMARY KEY,
-    task_id         VARCHAR(10) NOT NULL UNIQUE,
-    section_id      VARCHAR(50) NOT NULL,
-    requested_start VARCHAR(5) NOT NULL,
-    requested_end   VARCHAR(5) NOT NULL,
-    CONSTRAINT chk_request_time_order CHECK (requested_start < requested_end),
-    FOREIGN KEY (task_id, section_id) REFERENCES maintenance_task(task_id, section_id),
-    FOREIGN KEY (section_id) REFERENCES section(section_id)
-);
+    old_status VARCHAR(20),
+    new_status VARCHAR(20) NOT NULL,
 
-CREATE INDEX idx_request_section_time
-    ON block_request(section_id, requested_start, requested_end);
+    reason VARCHAR(255),
 
-CREATE TABLE block_schedule (
-    block_id    INT AUTO_INCREMENT PRIMARY KEY,
-    section_id  VARCHAR(50) NOT NULL,
-    task_id     VARCHAR(10) NOT NULL UNIQUE,
-    schedule_date DATE NOT NULL,
-    start_time  VARCHAR(5) NOT NULL,
-    end_time    VARCHAR(5) NOT NULL,
-    approved_by VARCHAR(40),
-    FOREIGN KEY (section_id) REFERENCES section(section_id),
-    FOREIGN KEY (task_id) REFERENCES maintenance_task(task_id)
-);
+    changed_by INT,
+    changed_at DATETIME DEFAULT CURRENT_TIMESTAMP,
 
--- Actual named-worker reservations for approved maintenance blocks.
--- A worker may not be assigned to overlapping blocks; the approval transaction
--- locks the qualified worker rows and inserts these records atomically.
-CREATE TABLE block_worker_assignment (
-    assignment_id INT AUTO_INCREMENT PRIMARY KEY,
-    block_id INT NOT NULL,
-    worker_id INT NOT NULL,
-    assigned_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
-    UNIQUE KEY uq_block_worker (block_id, worker_id),
-    KEY idx_assignment_worker (worker_id),
-    CONSTRAINT fk_assignment_block FOREIGN KEY (block_id) REFERENCES block_schedule(block_id) ON DELETE CASCADE,
-    CONSTRAINT fk_assignment_worker FOREIGN KEY (worker_id) REFERENCES worker_resource(worker_id)
-) ENGINE=InnoDB;
+    FOREIGN KEY (request_id)
+        REFERENCES maintenance_requests(id),
 
-CREATE TABLE train_schedule (
-    schedule_id  INT AUTO_INCREMENT PRIMARY KEY,
-    train_no     VARCHAR(10) NOT NULL,
-    train_type   VARCHAR(15),
-    section_id   VARCHAR(50) NOT NULL,
-    service_date DATE NOT NULL,
-    pass_start   VARCHAR(5),
-    pass_end     VARCHAR(5),
-    FOREIGN KEY (section_id) REFERENCES section(section_id)
-);
-
-CREATE TABLE conflict_log (
-    conflict_id INT AUTO_INCREMENT PRIMARY KEY,
-    section_id  VARCHAR(50) NOT NULL,
-    work_date   DATE NOT NULL,
-    task_id_1   VARCHAR(10) NOT NULL,
-    task_id_2   VARCHAR(10) NOT NULL,
-    detected_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-    UNIQUE KEY uq_conflict_pair (section_id, work_date, task_id_1, task_id_2)
+    FOREIGN KEY (changed_by)
+        REFERENCES users(id)
 );
 
 
-CREATE TABLE audit_log (
-    log_id       INT AUTO_INCREMENT PRIMARY KEY,
-    block_id     INT,
-    action       VARCHAR(50) NOT NULL,
-    performed_by VARCHAR(40),
-    log_time     TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+-- 5. CONFLICTS
+
+-- Records a detected conflict between two requests on a section.
+CREATE TABLE conflicts (
+    id INT AUTO_INCREMENT PRIMARY KEY,
+
+    section_id INT NOT NULL,
+
+    request_id_1 INT NOT NULL,
+    request_id_2 INT NOT NULL,
+
+    reason VARCHAR(255) NOT NULL,
+
+    detected_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+
+    resolved BOOLEAN DEFAULT FALSE,
+
+    FOREIGN KEY (section_id)
+        REFERENCES sections(id),
+
+    FOREIGN KEY (request_id_1)
+        REFERENCES maintenance_requests(id),
+
+    FOREIGN KEY (request_id_2)
+        REFERENCES maintenance_requests(id)
 );
 
-DELIMITER $$
-CREATE TRIGGER validate_block_request_before_insert
-BEFORE INSERT ON block_request
-FOR EACH ROW
-BEGIN
-    DECLARE v_duration INT DEFAULT 0;
-    DECLARE v_window INT DEFAULT 0;
-    SELECT duration_min INTO v_duration
-      FROM maintenance_task WHERE task_id = NEW.task_id;
-    SET v_window = TIMESTAMPDIFF(MINUTE,
-        STR_TO_DATE(NEW.requested_start, '%H:%i'),
-        STR_TO_DATE(NEW.requested_end, '%H:%i'));
-    IF NEW.requested_start >= NEW.requested_end THEN
-        SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT = 'Requested end must be after requested start';
-    ELSEIF v_window < v_duration THEN
-        SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT = 'Duration must fit inside the requested time window';
-    END IF;
-END$$
-DELIMITER ;
 
-DELIMITER $$
-CREATE TRIGGER after_block_approved
-AFTER INSERT ON block_schedule
-FOR EACH ROW
-BEGIN
-    UPDATE maintenance_task SET status = 'APPROVED' WHERE task_id = NEW.task_id;
-    INSERT INTO audit_log (block_id, action, performed_by)
-    VALUES (NEW.block_id, 'BLOCK_APPROVED', NEW.approved_by);
-END$$
-DELIMITER ;
+-- 6. PLANNER RUNS
 
-CREATE VIEW active_block_view AS
-SELECT b.block_id, b.section_id, b.task_id, b.schedule_date, t.work_desc,
-       d.dept_name, t.priority, b.start_time, b.end_time
-FROM block_schedule b
-JOIN maintenance_task t ON t.task_id = b.task_id
-JOIN department d       ON d.dept_id = t.dept_id;
+-- Records each planner execution and the user who triggered it.
+CREATE TABLE planning_runs (
+    id INT AUTO_INCREMENT PRIMARY KEY,
 
-CREATE VIEW department_work_view AS
-SELECT d.dept_name,
-       COUNT(*)              AS total_tasks,
-       SUM(t.duration_min)   AS total_minutes
-FROM maintenance_task t
-JOIN department d ON d.dept_id = t.dept_id
-GROUP BY d.dept_name;
+    triggered_by INT NOT NULL,
 
-CREATE VIEW section_utilization_view AS
-SELECT s.section_id, s.section_name, s.status, COUNT(b.block_id) AS blocks_scheduled
-FROM section s
-LEFT JOIN block_schedule b ON b.section_id = s.section_id
-GROUP BY s.section_id, s.section_name, s.status;
+    run_at DATETIME DEFAULT CURRENT_TIMESTAMP,
 
-CREATE INDEX idx_task_section ON maintenance_task(section_id);
+    -- Request IDs considered by the run. A separate join table is preferable
+    -- if queries need to filter or join individual run/request associations.
+    input_request_ids VARCHAR(500) NOT NULL,
 
-DELIMITER $$
-CREATE PROCEDURE sp_approve_block(
-    IN  p_task_id    VARCHAR(10),
-    IN  p_section_id VARCHAR(50),
-    IN  p_date       DATE,
-    IN  p_start      VARCHAR(5),
-    IN  p_end        VARCHAR(5),
-    IN  p_by         VARCHAR(40),
-    OUT p_block_id   INT,
-    OUT p_message    VARCHAR(100)
-)
-BEGIN
-    DECLARE v_block_overlap INT DEFAULT 0;
-    DECLARE v_train_overlap INT DEFAULT 0;
-    DECLARE v_task_ok INT DEFAULT 0;
-    DECLARE v_section_ok INT DEFAULT 0;
-    DECLARE v_task_status VARCHAR(25);
-    DECLARE v_locked_section VARCHAR(50);
-    DECLARE v_requested_start VARCHAR(5);
-    DECLARE v_requested_end VARCHAR(5);
-    DECLARE v_arrival_time VARCHAR(5);
-    DECLARE v_duration INT DEFAULT 0;
+    FOREIGN KEY (triggered_by)
+        REFERENCES users(id)
+);
 
-    DECLARE EXIT HANDLER FOR SQLEXCEPTION
-    BEGIN
-        ROLLBACK;
-        RESIGNAL;
-    END;
 
-    START TRANSACTION;
+-- 7. PROPOSED SCHEDULE
 
-    SELECT COUNT(*) INTO v_section_ok FROM section WHERE section_id = p_section_id;
-    IF v_section_ok > 0 THEN
-        SELECT section_id INTO v_locked_section
-        FROM section WHERE section_id = p_section_id FOR UPDATE;
-    END IF;
+-- Candidate allocations produced by a planner run for Control Room review.
+CREATE TABLE proposed_schedules (
+    id INT AUTO_INCREMENT PRIMARY KEY,
 
-    SELECT COUNT(*) INTO v_task_ok
-    FROM maintenance_task t
-    JOIN block_request r ON r.task_id = t.task_id AND r.section_id = t.section_id
-    WHERE t.task_id = p_task_id
-      AND t.section_id = p_section_id
-      AND t.work_date = p_date;
+    planning_run_id INT NOT NULL,
+    request_id INT NOT NULL,
 
-    IF v_task_ok > 0 THEN
-        SELECT t.status, r.requested_start, r.requested_end, t.arrival_time, t.duration_min
-          INTO v_task_status, v_requested_start, v_requested_end, v_arrival_time, v_duration
-        FROM maintenance_task t
-        JOIN block_request r ON r.task_id = t.task_id AND r.section_id = t.section_id
-        WHERE t.task_id = p_task_id AND t.section_id = p_section_id AND t.work_date = p_date
-        FOR UPDATE;
-    END IF;
+    section_id INT NOT NULL,
+    asset_id INT NULL,
 
-    SELECT COUNT(*) INTO v_block_overlap
-    FROM block_schedule
-    WHERE section_id = p_section_id
-      AND schedule_date = p_date
-      AND start_time < p_end
-      AND end_time > p_start;
+    allocated_start DATETIME NOT NULL,
+    allocated_end DATETIME NOT NULL,
 
-    SELECT COUNT(*) INTO v_train_overlap
-    FROM train_schedule
-    WHERE section_id = p_section_id
-      AND service_date = p_date
-      AND pass_start IS NOT NULL
-      AND pass_end IS NOT NULL
-      AND pass_start < p_end
-      AND pass_end > p_start;
+    -- Explains why a request was moved or rescheduled.
+    reschedule_reason VARCHAR(255),
 
-    IF p_start IS NULL OR p_end IS NULL
-       OR p_start NOT REGEXP '^([01][0-9]|2[0-3]):[0-5][0-9]$'
-       OR p_end NOT REGEXP '^([01][0-9]|2[0-3]):[0-5][0-9]$'
-       OR p_start >= p_end THEN
-        SET p_block_id = -1;
-        SET p_message = 'Enter valid times and make sure end is after start';
-    ELSEIF v_section_ok = 0 THEN
-        SET p_block_id = -1;
-        SET p_message = 'Section is not registered';
-    ELSEIF p_date < CURDATE() THEN
-        SET p_block_id = -1;
-        SET p_message = 'A past maintenance date cannot be approved';
-    ELSEIF p_date = CURDATE() AND p_start < DATE_FORMAT(CURTIME(), '%H:%i') THEN
-        SET p_block_id = -1;
-        SET p_message = 'The requested start time has already passed today';
-    ELSEIF v_task_ok = 0 OR v_task_status <> 'PENDING' THEN
-        SET p_block_id = -1;
-        SET p_message = 'Task is missing, belongs to another section, or is no longer pending';
-    ELSEIF p_start < v_requested_start OR p_end > v_requested_end OR p_start < v_arrival_time THEN
-        SET p_block_id = -1;
-        SET p_message = 'Approved time must respect arrival time and requested window';
-    ELSEIF TIMESTAMPDIFF(MINUTE, STR_TO_DATE(p_start, '%H:%i'), STR_TO_DATE(p_end, '%H:%i')) < v_duration THEN
-        SET p_block_id = -1;
-        SET p_message = 'Approved slot is shorter than the maintenance duration';
-    ELSEIF v_block_overlap > 0 THEN
-        SET p_block_id = -1;
-        SET p_message = 'Time overlaps an approved block';
-    ELSEIF v_train_overlap > 0 THEN
-        SET p_block_id = -1;
-        SET p_message = 'Time overlaps a train movement window';
-    ELSE
-        INSERT INTO block_schedule (section_id, task_id, schedule_date, start_time, end_time, approved_by)
-        VALUES (p_section_id, p_task_id, p_date, p_start, p_end, p_by);
-        SET p_block_id = LAST_INSERT_ID();
-        SET p_message = 'OK';
-    END IF;
+    FOREIGN KEY (planning_run_id)
+        REFERENCES planning_runs(id),
 
-    COMMIT;
-END$$
-DELIMITER ;
+    FOREIGN KEY (request_id)
+        REFERENCES maintenance_requests(id),
 
+    FOREIGN KEY (section_id)
+        REFERENCES sections(id),
+
+    FOREIGN KEY (asset_id)
+        REFERENCES assets(id)
+);
+
+
+-- 8. FINAL APPROVED SCHEDULE
+
+-- Stores the approved allocation for each request. The unique request_id
+-- constraint prevents multiple approved schedule rows for one request.
+CREATE TABLE block_schedules (
+    id INT AUTO_INCREMENT PRIMARY KEY,
+
+    request_id INT NOT NULL UNIQUE,
+
+    section_id INT NOT NULL,
+    asset_id INT NULL,
+
+    allocated_start DATETIME NOT NULL,
+    allocated_end DATETIME NOT NULL,
+
+    approved_by INT NOT NULL,
+
+    approved_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+
+    FOREIGN KEY (request_id)
+        REFERENCES maintenance_requests(id),
+
+    FOREIGN KEY (section_id)
+        REFERENCES sections(id),
+
+    FOREIGN KEY (asset_id)
+        REFERENCES assets(id),
+
+    FOREIGN KEY (approved_by)
+        REFERENCES users(id)
+);
+
+
+-- 9. AUDIT LOG
+
+-- Records important application actions and the user responsible, when known.
+CREATE TABLE audit_logs (
+    id INT AUTO_INCREMENT PRIMARY KEY,
+
+    action VARCHAR(50) NOT NULL,
+
+    performed_by INT,
+
+    details VARCHAR(500),
+
+    created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+
+    FOREIGN KEY (performed_by)
+        REFERENCES users(id)
+);
+
+
+-- 10. AI CHAT HISTORY
+
+-- Stores assistant conversations and the context supplied for each answer.
+-- Protect this potentially sensitive content with appropriate access controls.
+CREATE TABLE chat_history (
+    id INT AUTO_INCREMENT PRIMARY KEY,
+
+    user_id INT NOT NULL,
+
+    question VARCHAR(500) NOT NULL,
+
+    -- Information taken from SmartBlock before generating the answer
+    retrieved_context TEXT,
+
+    answer TEXT NOT NULL,
+
+    created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+
+    FOREIGN KEY (user_id)
+        REFERENCES users(id)
+);
